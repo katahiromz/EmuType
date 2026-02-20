@@ -828,8 +828,18 @@ void draw_glyph(HDC hDC, FT_Bitmap* bitmap, int left, int top,
     }
 }
 
-void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
-                    FontInfo* font_info, LONG lfHeight, XFORM* pxform)
+void draw_text_wide(
+    HDC hDC,
+    INT x,
+    INT y,
+    UINT fuOptions,
+    CONST RECT *lprc,
+    const WCHAR* wide_text,
+    INT cch,
+    CONST INT *lpDx,
+    FontInfo* font_info,
+    LONG lfHeight,
+    XFORM* pxform)
 {
     COLORREF fg_color = GetTextColor(hDC);
     COLORREF bg_color = GetBkColor(hDC);
@@ -1050,11 +1060,13 @@ void AppMain(void)
     for (int i = 0; i < num_lines; ++i)
     {
         ModifyWorldTransform(hDC, NULL, MWT_IDENTITY);
+
         SetBkMode(hDC, OPAQUE);
         SetBkColor(hDC, BG);
         SetTextColor(hDC, FG);
-        draw_text_wide(hDC, 10, start_y + i * line_height,
-            lines[i], lstrlenW(lines[i]), font_info, FONT_SIZE, &xform);
+        draw_text_wide(hDC,10, start_y + i * line_height, 0,
+                       NULL, lines[i], lstrlenW(lines[i]), NULL,
+                       font_info, FONT_SIZE, &xform);
 
         SetWorldTransform(hDC, &xform);
 
@@ -1065,8 +1077,8 @@ void AppMain(void)
         lf.lfCharSet = DEFAULT_CHARSET;
         HFONT hFont = CreateFontIndirectA(&lf);
         HGDIOBJ hFontOld = SelectObject(hDC, hFont);
-        TextOutW(hDC, 10, start_y + i * line_height + 100,
-                 lines[i], lstrlenW(lines[i]));
+        ExtTextOutW(hDC, 10, start_y + i * line_height + 100, 0,
+                   NULL, lines[i], lstrlenW(lines[i]), NULL);
         SelectObject(hDC, hFontOld);
         DeleteObject(hFont);
     }
