@@ -46,7 +46,8 @@ const int WIDTH  = 300;
 const int HEIGHT = 300;
 const COLORREF BG = RGB(255, 255, 255); // 白背景
 const COLORREF FG = RGB(0,   0,   0);   // 黒文字
-const LONG FONT_SIZE = 24;
+const char* FONT_NAME = "Tahoma";
+const LONG FONT_SIZE = -40;
 
 // フォントの種類を判定するヘルパー
 static bool is_raster_font(const std::string& path)
@@ -231,23 +232,23 @@ bool fill_raster_text_metrics(FT_Face face, FontInfo* info) {
 
     info->potm->otmSize = sizeof(TEXTMETRICW);
     TEXTMETRICW* tm = &info->potm->otmTextMetrics;
-    tm->tmHeight           = WinFNT->pixel_height;
-    tm->tmAscent           = WinFNT->ascent;
+    tm->tmHeight           = WinFNT.pixel_height;
+    tm->tmAscent           = WinFNT.ascent;
     tm->tmDescent          = tm->tmHeight - tm->tmAscent;
-    tm->tmInternalLeading  = WinFNT->internal_leading;
-    tm->tmExternalLeading  = WinFNT->external_leading;
-    tm->tmAveCharWidth     = WinFNT->avg_width;
-    tm->tmMaxCharWidth     = WinFNT->max_width;
-    tm->tmWeight           = WinFNT->weight;
-    tm->tmItalic           = WinFNT->italic;
-    tm->tmUnderlined       = WinFNT->underline;
-    tm->tmStruckOut        = WinFNT->strike_out;
-    tm->tmFirstChar        = WinFNT->first_char;
-    tm->tmLastChar         = WinFNT->last_char;
-    tm->tmDefaultChar      = WinFNT->default_char;
-    tm->tmBreakChar        = WinFNT->break_char;
-    tm->tmCharSet          = WinFNT->charset;
-    tm->tmPitchAndFamily   = WinFNT->pitch_and_family;
+    tm->tmInternalLeading  = WinFNT.internal_leading;
+    tm->tmExternalLeading  = WinFNT.external_leading;
+    tm->tmAveCharWidth     = WinFNT.avg_width;
+    tm->tmMaxCharWidth     = WinFNT.max_width;
+    tm->tmWeight           = WinFNT.weight;
+    tm->tmItalic           = WinFNT.italic;
+    tm->tmUnderlined       = WinFNT.underline;
+    tm->tmStruckOut        = WinFNT.strike_out;
+    tm->tmFirstChar        = WinFNT.first_char;
+    tm->tmLastChar         = WinFNT.last_char;
+    tm->tmDefaultChar      = WinFNT.default_char;
+    tm->tmBreakChar        = WinFNT.break_char;
+    tm->tmCharSet          = WinFNT.charset;
+    tm->tmPitchAndFamily   = WinFNT.pitch_and_family;
     return TRUE;
 }
 
@@ -272,49 +273,102 @@ bool fill_outline_text_metrics(FT_Face face, FontInfo* info) {
     if (!FT_IS_SFNT(face))
         return false;
 
-    // 1. 各種文字列の取得と UTF-16 変換
+    // 1. 各種文字列の準備
     std::string family_utf8 = get_family_name(face, true);
     std::string style_utf8  = get_style_name(face, true);
     std::string face_utf8   = family_utf8 + (style_utf8.empty() ? "" : " " + style_utf8);
-    std::string full_utf8   = face_utf8; // 本来はもっと複雑な構成が可能
-
     std::wstring wFamily = utf8_to_wide(family_utf8);
     std::wstring wFace   = utf8_to_wide(face_utf8);
     std::wstring wStyle  = utf8_to_wide(style_utf8);
-    std::wstring wFull   = utf8_to_wide(full_utf8);
+    std::wstring wFull   = wFace; 
 
     size_t strings_size = (wFamily.length() + 1 + wFace.length() + 1 +
                            wStyle.length() + 1 + wFull.length() + 1) * sizeof(WCHAR);
     size_t total_size = sizeof(OUTLINETEXTMETRICW) + strings_size;
 
-    // 3. メモリ確保
     info->potm = (OUTLINETEXTMETRICW*)calloc(1, total_size);
     if (!info->potm) return false;
 
     POUTLINETEXTMETRICW potm = info->potm;
     potm->otmSize = (UINT)total_size;
 
-    // --- メトリクス情報のフィル (前回同様) ---
-    potm->otmTextMetrics.tmAscent  = (LONG)face->ascender;
-    potm->otmTextMetrics.tmDescent = (LONG)-face->descender;
-    potm->otmTextMetrics.tmHeight  = potm->otmTextMetrics.tmAscent + potm->otmTextMetrics.tmDescent;
-    potm->otmTextMetrics.tmInternalLeading = (LONG)(potm->otmTextMetrics.tmHeight - face->units_per_EM);
-    potm->otmEMSquare = (UINT)face->units_per_EM;
+    // テーブル取得
+    TT_OS2* pOS2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+    TT_Postscript* post = (TT_Postscript*)FT_Get_Sfnt_Table(face, FT_SFNT_POST);
+
+    // --- スケーリング用マクロ ---
+    // GDIのOUTLINETEXTMETRICは、現在のデバイスコンテキストの解像度に基づいたピクセル値を返します。
+    FT_Fixed x_scale = face->size->metrics.x_scale;
+    FT_Fixed y_scale = face->size->metrics.y_scale;
+    auto ScaleX = [&](FT_Short v) { return (LONG)((FT_MulFix(v, x_scale) + 32) >> 6); };
+    auto ScaleY = [&](FT_Short v) { return (LONG)((FT_MulFix(v, y_scale) + 32) >> 6); };
+
+    // --- 1. TEXTMETRICW (デバイス依存のピクセル値) ---
+    TEXTMETRICW* tm = &potm->otmTextMetrics;
+    tm->tmAscent  = (LONG)((face->size->metrics.ascender + 32) >> 6);
+    tm->tmDescent = (LONG)((-face->size->metrics.descender + 32) >> 6);
+    tm->tmHeight  = tm->tmAscent + tm->tmDescent;
+    tm->tmInternalLeading = tm->tmHeight - ScaleY(face->units_per_EM);
+    if (tm->tmInternalLeading < 0) tm->tmInternalLeading = 0;
+    tm->tmExternalLeading = (LONG)((face->size->metrics.height + 32) >> 6) - tm->tmHeight;
     
-    TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
-    if (os2) {
-        memcpy(&potm->otmPanoseNumber, &os2->panose, 10);
-        potm->otmfsSelection = os2->fsSelection;
-        potm->otmfsType = os2->fsType;
+    // 平均文字幅の計算 (OS/2テーブルがあれば xAvgCharWidth を使用)
+    tm->tmAveCharWidth = (pOS2) ? ScaleX(pOS2->xAvgCharWidth) : (LONG)((face->size->metrics.max_advance + 32) >> 12); // 簡易計算
+    tm->tmMaxCharWidth = (LONG)((face->size->metrics.max_advance + 32) >> 6);
+
+    tm->tmWeight    = (pOS2) ? pOS2->usWeightClass : ((face->style_flags & FT_STYLE_FLAG_BOLD) ? FW_BOLD : FW_NORMAL);
+    tm->tmItalic    = (face->style_flags & FT_STYLE_FLAG_ITALIC) ? 1 : 0;
+    tm->tmUnderlined = (pOS2 && (pOS2->fsSelection & 0x80)) ? 1 : 0;
+    tm->tmStruckOut  = (pOS2 && (pOS2->fsSelection & 0x10)) ? 1 : 0;
+    tm->tmPitchAndFamily = (face->face_flags & FT_FACE_FLAG_FIXED_WIDTH) ? TMPF_FIXED_PITCH : (TMPF_VARIABLE_PITCH | TMPF_TRUETYPE | TMPF_VECTOR);
+    tm->tmCharSet = info->charset;
+
+    // --- 2. OUTLINETEXTMETRICW (詳細メトリクス) ---
+    potm->otmEMSquare = face->units_per_EM;
+    potm->otmfsSelection = (pOS2) ? pOS2->fsSelection : 0;
+    potm->otmfsType = (pOS2) ? pOS2->fsType : 0;
+
+    // 下線・取消線 (EM単位ではなくピクセル単位)
+    if (pOS2) {
+        potm->otmsStrikeoutSize = ScaleY(pOS2->yStrikeoutSize);
+        potm->otmsStrikeoutPosition = ScaleY(pOS2->yStrikeoutPosition);
+    }
+    if (post) {
+        potm->otmsUnderscoreSize = ScaleY(post->underlineThickness);
+        potm->otmsUnderscorePosition = ScaleY(post->underlinePosition);
     }
 
-    BYTE* pStrBase = (BYTE*)potm + sizeof(OUTLINETEXTMETRICW);
-    BYTE* pBaseAddr = (BYTE*)potm;
+    // FontBox (ピクセル単位)
+    potm->otmrcFontBox.left   = ScaleX(face->bbox.xMin);
+    potm->otmrcFontBox.right  = ScaleX(face->bbox.xMax);
+    potm->otmrcFontBox.top    = ScaleY(face->bbox.yMax);
+    potm->otmrcFontBox.bottom = ScaleY(face->bbox.yMin);
 
-    copy_str_to_otm(wFamily, potm->otmpFamilyName, pStrBase, pBaseAddr);
-    copy_str_to_otm(wFace,   potm->otmpFaceName,   pStrBase, pBaseAddr);
-    copy_str_to_otm(wStyle,  potm->otmpStyleName,  pStrBase, pBaseAddr);
-    copy_str_to_otm(wFull,   potm->otmpFullName,   pStrBase, pBaseAddr);
+    // タイポグラフィ用 (sTypo系をピクセル変換)
+    if (pOS2) {
+        potm->otmAscent  = ScaleY(pOS2->sTypoAscender);
+        potm->otmDescent = ScaleY(pOS2->sTypoDescender);
+        potm->otmLineGap = ScaleY(pOS2->sTypoLineGap);
+        potm->otmMacAscent  = ScaleY(pOS2->sTypoAscender); // WindowsではTypo値を入れることが多い
+        potm->otmMacDescent = ScaleY(pOS2->sTypoDescender);
+        potm->otmMacLineGap = ScaleY(pOS2->sTypoLineGap);
+        memcpy(&potm->otmPanoseNumber, &pOS2->panose, 10);
+    }
+
+    // --- 3. 文字列ポインタの設定 ---
+    // otmpFamilyName 等には「構造体の先頭からのバイトオフセット」を入れる
+    BYTE* pStrBase = (BYTE*)potm + sizeof(OUTLINETEXTMETRICW);
+    auto SetString = [&](const std::wstring& s, PSTR& member) {
+        size_t len = (s.length() + 1) * sizeof(WCHAR);
+        memcpy(pStrBase, s.c_str(), len);
+        member = (PSTR)(pStrBase - (BYTE*)potm); // オフセットとして格納
+        pStrBase += len;
+    };
+
+    SetString(wFamily, potm->otmpFamilyName);
+    SetString(wFace,   potm->otmpFaceName);
+    SetString(wStyle,  potm->otmpStyleName);
+    SetString(wFull,   potm->otmpFullName);
 
     return true;
 }
@@ -906,7 +960,7 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
 
 void AppMain(void)
 {
-    const char* font_name = "MS Serif";
+    const char* font_name = FONT_NAME;
     FontInfo* font_info = find_font_by_name(font_name, 0, abs(FONT_SIZE));
     if (!font_info) {
         printf("'%s': not found\n", font_name);
