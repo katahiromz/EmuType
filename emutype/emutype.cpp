@@ -20,6 +20,54 @@
 #define MAKE_SURROGATE_PAIR(w1, w2) \
     (0x10000 + (((DWORD)(w1) - HIGH_SURROGATE_START) << 10) + ((DWORD)(w2) - LOW_SURROGATE_START));
 
+#define _TMPF_VARIABLE_PITCH TMPF_FIXED_PITCH // TMPF_FIXED_PITCH is brain dead api
+
+/*
+ *  For TranslateCharsetInfo
+ */
+#define CP_SYMBOL   42
+#define MAXTCIINDEX 32
+static const CHARSETINFO g_FontTci[MAXTCIINDEX] =
+{
+    /* ANSI */
+    { ANSI_CHARSET, 1252, {{0,0,0,0},{FS_LATIN1,0}} },
+    { EASTEUROPE_CHARSET, 1250, {{0,0,0,0},{FS_LATIN2,0}} },
+    { RUSSIAN_CHARSET, 1251, {{0,0,0,0},{FS_CYRILLIC,0}} },
+    { GREEK_CHARSET, 1253, {{0,0,0,0},{FS_GREEK,0}} },
+    { TURKISH_CHARSET, 1254, {{0,0,0,0},{FS_TURKISH,0}} },
+    { HEBREW_CHARSET, 1255, {{0,0,0,0},{FS_HEBREW,0}} },
+    { ARABIC_CHARSET, 1256, {{0,0,0,0},{FS_ARABIC,0}} },
+    { BALTIC_CHARSET, 1257, {{0,0,0,0},{FS_BALTIC,0}} },
+    { VIETNAMESE_CHARSET, 1258, {{0,0,0,0},{FS_VIETNAMESE,0}} },
+    /* reserved by ANSI */
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    /* ANSI and OEM */
+    { THAI_CHARSET, 874, {{0,0,0,0},{FS_THAI,0}} },
+    { SHIFTJIS_CHARSET, 932, {{0,0,0,0},{FS_JISJAPAN,0}} },
+    { GB2312_CHARSET, 936, {{0,0,0,0},{FS_CHINESESIMP,0}} },
+    { HANGEUL_CHARSET, 949, {{0,0,0,0},{FS_WANSUNG,0}} },
+    { CHINESEBIG5_CHARSET, 950, {{0,0,0,0},{FS_CHINESETRAD,0}} },
+    { JOHAB_CHARSET, 1361, {{0,0,0,0},{FS_JOHAB,0}} },
+    /* Reserved for alternate ANSI and OEM */
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    /* Reserved for system */
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { SYMBOL_CHARSET, CP_SYMBOL, {{0,0,0,0},{FS_SYMBOL,0}} }
+};
+
 // 今回は別のレジストリキーでテストする。
 const char* reg_key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
 
@@ -32,9 +80,8 @@ struct FontInfo {
     FT_Long em_ascender;
     FT_Long em_descender;
     FT_Long em_units;
-    FT_Byte charset;
+    BYTE charset;
     INT raster_height;
-    POUTLINETEXTMETRICW potm;
 };
 std::vector<FontInfo*> registered_fonts;
 
@@ -46,8 +93,8 @@ const int WIDTH  = 300;
 const int HEIGHT = 300;
 const COLORREF BG = RGB(255, 255, 255); // 白背景
 const COLORREF FG = RGB(0,   0,   0);   // 黒文字
-const char* FONT_NAME = "Tahoma";
-const LONG FONT_SIZE = -40;
+const char* FONT_NAME = "MS Sans Serif";
+const LONG FONT_SIZE = -20;
 
 // フォントの種類を判定するヘルパー
 static bool is_raster_font(const std::string& path)
@@ -64,6 +111,17 @@ bool is_supported_font(const char *filename) {
            lstrcmpiA(pchDotExt, ".otc") == 0 ||
            lstrcmpiA(pchDotExt, ".fon") == 0 ||
            lstrcmpiA(pchDotExt, ".fnt") == 0;
+}
+
+int calc_pixel_size_from_cell_height(FontInfo* font_info, int cell_height_px)
+{
+    FT_Long em_ascender  = font_info->em_ascender;
+    FT_Long em_descender = font_info->em_descender;
+    FT_Long em_units     = font_info->em_units;
+    FT_Long em_cell = em_ascender - em_descender;
+    int pixel_size = static_cast<int>(
+        static_cast<double>(cell_height_px) * em_units / em_cell + 0.5);
+    return pixel_size;
 }
 
 FT_Error
@@ -119,7 +177,7 @@ static std::string get_family_name(FT_Face face, bool localized)
                 name = mbstr;
             }
 
-            if (sname.language_id == TT_MS_LANGID_JAPANESE_JAPAN && localized)
+            if (sname.language_id == GetUserDefaultLangID() && localized)
                 priority = 3;
             else if (sname.language_id == TT_MS_LANGID_ENGLISH_UNITED_STATES)
                 priority = 2;
@@ -190,7 +248,7 @@ static std::string get_style_name(FT_Face face, bool localized)
                 name = mbstr;
             }
 
-            if (sname.language_id == TT_MS_LANGID_JAPANESE_JAPAN && localized)
+            if (sname.language_id == GetUserDefaultLangID() && localized)
                 priority = 3;
             else if (sname.language_id == TT_MS_LANGID_ENGLISH_UNITED_STATES)
                 priority = 2;
@@ -218,38 +276,33 @@ static std::string get_style_name(FT_Face face, bool localized)
     return face->style_name ? face->style_name : "";
 }
 
-bool fill_raster_text_metrics(FT_Face face, FontInfo* info) {
+TEXTMETRICW* get_raster_text_metrics(FT_Face face, FontInfo* info) {
     FT_WinFNT_HeaderRec WinFNT;
     if (FT_Get_WinFNT_Header(face, &WinFNT) != 0)
-        return false;
+        return NULL;
 
-    info->charset = WinFNT.charset;
-    info->raster_height = WinFNT.pixel_height;
+    TEXTMETRICW* ptm = (TEXTMETRICW*)calloc(1, sizeof(TEXTMETRICW));
+    if (!ptm)
+        return NULL;
 
-    info->potm = (OUTLINETEXTMETRICW*)calloc(1, sizeof(OUTLINETEXTMETRICW));
-    if (!info->potm)
-        return false;
-
-    info->potm->otmSize = sizeof(TEXTMETRICW);
-    TEXTMETRICW* tm = &info->potm->otmTextMetrics;
-    tm->tmHeight           = WinFNT.pixel_height;
-    tm->tmAscent           = WinFNT.ascent;
-    tm->tmDescent          = tm->tmHeight - tm->tmAscent;
-    tm->tmInternalLeading  = WinFNT.internal_leading;
-    tm->tmExternalLeading  = WinFNT.external_leading;
-    tm->tmAveCharWidth     = WinFNT.avg_width;
-    tm->tmMaxCharWidth     = WinFNT.max_width;
-    tm->tmWeight           = WinFNT.weight;
-    tm->tmItalic           = WinFNT.italic;
-    tm->tmUnderlined       = WinFNT.underline;
-    tm->tmStruckOut        = WinFNT.strike_out;
-    tm->tmFirstChar        = WinFNT.first_char;
-    tm->tmLastChar         = WinFNT.last_char;
-    tm->tmDefaultChar      = WinFNT.default_char;
-    tm->tmBreakChar        = WinFNT.break_char;
-    tm->tmCharSet          = WinFNT.charset;
-    tm->tmPitchAndFamily   = WinFNT.pitch_and_family;
-    return TRUE;
+    ptm->tmHeight           = WinFNT.pixel_height;
+    ptm->tmAscent           = WinFNT.ascent;
+    ptm->tmDescent          = ptm->tmHeight - ptm->tmAscent;
+    ptm->tmInternalLeading  = WinFNT.internal_leading;
+    ptm->tmExternalLeading  = WinFNT.external_leading;
+    ptm->tmAveCharWidth     = WinFNT.avg_width;
+    ptm->tmMaxCharWidth     = WinFNT.max_width;
+    ptm->tmWeight           = WinFNT.weight;
+    ptm->tmItalic           = WinFNT.italic;
+    ptm->tmUnderlined       = WinFNT.underline;
+    ptm->tmStruckOut        = WinFNT.strike_out;
+    ptm->tmFirstChar        = WinFNT.first_char;
+    ptm->tmLastChar         = WinFNT.last_char;
+    ptm->tmDefaultChar      = WinFNT.default_char;
+    ptm->tmBreakChar        = WinFNT.break_char;
+    ptm->tmCharSet          = WinFNT.charset;
+    ptm->tmPitchAndFamily   = WinFNT.pitch_and_family;
+    return ptm;
 }
 
 // UTF-8文字列をstd::wstring(UTF-16)に変換する
@@ -269,9 +322,9 @@ static void copy_str_to_otm(const std::wstring& src, PSTR& dest_member, BYTE*& p
     pStrBase += bsize; // 書き込み位置を次に進める
 }
 
-bool fill_outline_text_metrics(FT_Face face, FontInfo* info) {
+OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
     if (!FT_IS_SFNT(face))
-        return false;
+        return NULL;
 
     // 1. 各種文字列の準備
     std::string family_utf8 = get_family_name(face, true);
@@ -286,10 +339,9 @@ bool fill_outline_text_metrics(FT_Face face, FontInfo* info) {
                            wStyle.length() + 1 + wFull.length() + 1) * sizeof(WCHAR);
     size_t total_size = sizeof(OUTLINETEXTMETRICW) + strings_size;
 
-    info->potm = (OUTLINETEXTMETRICW*)calloc(1, total_size);
-    if (!info->potm) return false;
-
-    POUTLINETEXTMETRICW potm = info->potm;
+    POUTLINETEXTMETRICW potm = (OUTLINETEXTMETRICW*)calloc(1, total_size);
+    if (!potm)
+        return NULL;
     potm->otmSize = (UINT)total_size;
 
     // テーブル取得
@@ -320,8 +372,8 @@ bool fill_outline_text_metrics(FT_Face face, FontInfo* info) {
     tm->tmItalic    = (face->style_flags & FT_STYLE_FLAG_ITALIC) ? 1 : 0;
     tm->tmUnderlined = (pOS2 && (pOS2->fsSelection & 0x80)) ? 1 : 0;
     tm->tmStruckOut  = (pOS2 && (pOS2->fsSelection & 0x10)) ? 1 : 0;
-    tm->tmPitchAndFamily = (face->face_flags & FT_FACE_FLAG_FIXED_WIDTH) ? TMPF_FIXED_PITCH : (TMPF_VARIABLE_PITCH | TMPF_TRUETYPE | TMPF_VECTOR);
-    tm->tmCharSet = info->charset;
+    tm->tmPitchAndFamily = (face->face_flags & FT_FACE_FLAG_FIXED_WIDTH) ? 0 : (_TMPF_VARIABLE_PITCH | TMPF_TRUETYPE | TMPF_VECTOR);
+    tm->tmCharSet = charset;
 
     // --- 2. OUTLINETEXTMETRICW (詳細メトリクス) ---
     potm->otmEMSquare = face->units_per_EM;
@@ -370,48 +422,59 @@ bool fill_outline_text_metrics(FT_Face face, FontInfo* info) {
     SetString(wStyle,  potm->otmpStyleName);
     SetString(wFull,   potm->otmpFullName);
 
-    return true;
+    return potm;
 }
 
-bool load_font(const char *path, int index)
+bool load_font(const char *path, int face_index)
 {
-    int iStart = (index == -1) ? 0 : index;
+    int iStart = (face_index == -1) ? 0 : face_index;
     FT_Face face;
     FT_Error error = FT_New_Face(library, path, iStart, &face);
     if (error)
         return false;
 
     FT_Long num_faces = face->num_faces;
+    std::vector<BYTE> charsets;
 
-    FontInfo* info = new FontInfo();
-    info->path = path;
-    info->face_index = iStart;
-    info->family_name = get_family_name(face, true);
-    info->english_name = get_family_name(face, false);
-    info->style_flags = face->style_flags;
-    info->em_ascender  = face->ascender;
-    info->em_descender = face->descender;
-    info->em_units     = face->units_per_EM;
-    info->charset = 0xFF; // unknown
-    info->raster_height = 0;
-    info->potm = NULL;
-
-    if (FT_IS_SFNT(face))
-    {
-        if (!fill_outline_text_metrics(face, info))
-            return false;
-    }
-    else
-    {
-        if (!fill_raster_text_metrics(face, info))
-            return false;
+    TT_OS2* pOS2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+    if (pOS2) {
+        // ulCodePageRange1 のビットを走査して g_FontTci と照らし合わせる
+        for (int i = 0; i < MAXTCIINDEX; i++) {
+            if (g_FontTci[i].fs.fsCsb[0] & (1 << i)) { // 簡易的な判定
+                charsets.push_back(g_FontTci[i].ciCharset);
+            }
+        }
     }
 
-    registered_fonts.push_back(info);
+    FT_WinFNT_HeaderRec WinFNT;
+    INT raster_height = 0;
+    if (FT_Get_WinFNT_Header(face, &WinFNT) == 0)
+    {
+        charsets.push_back(WinFNT.charset);
+        raster_height = WinFNT.pixel_height - WinFNT.internal_leading;
+    }
+
+    if (charsets.empty())
+        charsets.push_back(DEFAULT_CHARSET);
+
+    for (BYTE cs : charsets) {
+        FontInfo* info = new FontInfo();
+        info->path = path;
+        info->face_index = iStart;
+        info->family_name = get_family_name(face, true);
+        info->english_name = get_family_name(face, false);
+        info->style_flags = face->style_flags;
+        info->em_ascender  = face->ascender;
+        info->em_descender = face->descender;
+        info->em_units = face->units_per_EM;
+        info->charset = cs;
+        info->raster_height = raster_height;
+        registered_fonts.push_back(info);
+    }
 
     FT_Done_Face(face);
 
-    if (index == -1)
+    if (face_index == -1)
     {
         for (FT_Long iFace = 1; iFace < num_faces; ++iFace)
         {
@@ -427,8 +490,6 @@ void free_fonts(void)
 {
     for (auto* info : registered_fonts)
     {
-        if (info->potm)
-            free(info->potm);
         delete info;
     }
     registered_fonts.clear();
@@ -690,7 +751,7 @@ VOID FreeFontSupport(VOID)
 FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int preferred_height = 0, FT_Byte preferred_charset = ANSI_CHARSET)
 {
     FontInfo* best = NULL;
-    int best_penalty = INT_MAX;
+    int total_penalty,best_penalty = INT_MAX;
 
     for (auto* info : registered_fonts)
     {
@@ -699,21 +760,22 @@ FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int 
 
         if (!is_raster_font(info->path))
         {
-            // アウトラインフォントはstyle_flagsだけ見ればよい
             if (info->style_flags == style_flags)
                 return info;
             continue;
         }
 
-        if (!is_raster_font(info->path))
+        if (is_raster_font(info->path))
         {
-            // アウトラインフォントはそのまま返す
-            return info;
+            int charset_penalty = (info->charset != preferred_charset) ? 10000 : 0;
+            int size_penalty    = abs(info->raster_height - preferred_height);
+            total_penalty = charset_penalty + size_penalty;
         }
-
-        int charset_penalty = (info->charset != preferred_charset) ? 10000 : 0;
-        int size_penalty    = abs(info->raster_height - preferred_height);
-        int total_penalty   = charset_penalty + size_penalty;
+        else
+        {
+            int charset_penalty = (info->charset != preferred_charset) ? 10000 : 0;
+            total_penalty   = charset_penalty;
+        }
 
         if (total_penalty < best_penalty)
         {
@@ -735,9 +797,6 @@ FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int 
     return NULL;
 }
 
-// FreeTypeのグレースケールビットマップ（8bpp）をHDCに描画する。
-// (pen_x, pen_y) はベースライン上のペン位置（ピクセル単位）。
-// fg_color: 文字色（COLORREF）、bg_color: 背景色（COLORREF）。
 void draw_glyph(HDC hDC, FT_Bitmap* bitmap, int left, int top,
                 COLORREF fg_color, COLORREF bg_color)
 {
@@ -769,19 +828,8 @@ void draw_glyph(HDC hDC, FT_Bitmap* bitmap, int left, int top,
     }
 }
 
-int calc_pixel_size_from_cell_height(FontInfo* font_info, int cell_height_px)
-{
-    FT_Long em_ascender  = font_info->em_ascender;
-    FT_Long em_descender = font_info->em_descender;
-    FT_Long em_units     = font_info->em_units;
-    FT_Long em_cell = em_ascender - em_descender;
-    int pixel_size = static_cast<int>(
-        static_cast<double>(cell_height_px) * em_units / em_cell + 0.5);
-    return pixel_size;
-}
-
 void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
-                    FontInfo* font_info, LONG lfHeight)
+                    FontInfo* font_info, LONG lfHeight, XFORM* pxform)
 {
     COLORREF fg_color = GetTextColor(hDC);
     COLORREF bg_color = GetBkColor(hDC);
@@ -790,8 +838,9 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
     FT_Face face = NULL;
     bool face_needs_done = false;
 
-    FT_WinFNT_HeaderRec fnt_header;
+    FT_WinFNT_HeaderRec WinFNT;
     bool has_fnt_header = false;
+    int pixel_ascent;
 
     if (is_raster)
     {
@@ -802,7 +851,14 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
         face_needs_done = true;
 
         // 要求サイズに最も近い固定サイズを選択
-        int target_h = (lfHeight < 0) ? -lfHeight : (lfHeight > 0 ? lfHeight : 12);
+        int target_h;
+        if (lfHeight < 0)
+            target_h = font_info->raster_height;
+        else if (lfHeight > 0)
+            target_h = lfHeight;
+        else
+            target_h = 12;
+
         int best_idx = 0, best_diff = INT_MAX;
         for (int i = 0; i < face->num_fixed_sizes; ++i)
         {
@@ -811,18 +867,12 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
         }
         FT_Select_Size(face, best_idx);
 
-        printf("Selected size: %d px (requested %d)\n",
-            face->available_sizes[best_idx].height, target_h);
-        printf("metrics: ascender=%ld, descender=%ld, height=%ld\n",
-            face->size->metrics.ascender >> 6,
-            face->size->metrics.descender >> 6,
-            face->size->metrics.height >> 6);
-
         // FT_Select_Size の直後に追加
-        fnt_header;
-        bool has_fnt_header = (FT_Get_WinFNT_Header(face, &fnt_header) == 0);
+        bool has_fnt_header = (FT_Get_WinFNT_Header(face, &WinFNT) == 0);
         printf("first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
-            fnt_header.first_char, fnt_header.last_char, fnt_header.default_char);
+            WinFNT.first_char, WinFNT.last_char, WinFNT.default_char);
+
+        pixel_ascent = face->size->metrics.ascender >> 6;
     }
     else
     {
@@ -831,11 +881,12 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
         scaler.face_id = static_cast<FTC_FaceID>(font_info);
         scaler.width   = 0;
         if (lfHeight < 0) {
-            scaler.height = static_cast<FT_UInt>(-lfHeight);
+            // Cell Height 指定時
+            double cell_height_em = static_cast<double>(font_info->em_ascender - font_info->em_descender);
+            scaler.height = static_cast<FT_UInt>((static_cast<double>(-lfHeight) * font_info->em_units / cell_height_em) + 0.5);
         } else if (lfHeight > 0) {
-            FT_Long em_cell = font_info->em_ascender - font_info->em_descender;
-            scaler.height = static_cast<FT_UInt>(
-                static_cast<double>(lfHeight) * font_info->em_units / em_cell + 0.5);
+            // Character Height (EM Square) 指定時：そのままの値を渡す
+            scaler.height = static_cast<FT_UInt>(lfHeight);
         } else {
             scaler.height = 12;
         }
@@ -847,10 +898,10 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
         if (FTC_Manager_LookupSize(cache_manager, &scaler, &ft_size) != 0)
             return;
         face = ft_size->face;
-        // face_needs_done = false のまま（キャッシュ管理）
+
+        pixel_ascent = face->size->metrics.ascender >> 6;
     }
 
-    int pixel_ascent = face->size->metrics.ascender >> 6;
     int baseline_y   = y + pixel_ascent;
     int pen_x        = x;
 
@@ -900,19 +951,19 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
 
             unsigned char byte_val = (unsigned char)mb[0];
 
-            if (byte_val < fnt_header.first_char || byte_val > fnt_header.last_char)
+            if (byte_val < WinFNT.first_char || byte_val > WinFNT.last_char)
             {
                 // 範囲外は default_char を使う
-                glyph_index = fnt_header.default_char - fnt_header.first_char;
+                glyph_index = WinFNT.default_char - WinFNT.first_char;
             }
             else
             {
-                glyph_index = byte_val - fnt_header.first_char + 1;
+                glyph_index = byte_val - WinFNT.first_char + 1;
             }
 
             printf("glyph_index=%u, byte_val=0x%02X, first_char=0x%02X, calc=%u\n",
-                glyph_index, byte_val, fnt_header.first_char,
-                byte_val - fnt_header.first_char);
+                glyph_index, byte_val, WinFNT.first_char,
+                byte_val - WinFNT.first_char);
         }
         else
         {
@@ -937,9 +988,12 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
             face->charmap ? face->charmap->encoding    : -1);
 
         FT_GlyphSlot slot = face->glyph;
+
+        int glyph_y = baseline_y - slot->bitmap_top;
+
         draw_glyph(hDC, &slot->bitmap,
                    pen_x + slot->bitmap_left,
-                   baseline_y - slot->bitmap_top,
+                   glyph_y,
                    fg_color, bg_color);
 
         printf("glyph U+%04lX: bitmap=%dx%d, advance.x=%ld (>>6=%ld), bitmap_left=%d, bitmap_top=%d\n",
@@ -948,10 +1002,7 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
             slot->advance.x, slot->advance.x >> 6,
             slot->bitmap_left, slot->bitmap_top);
 
-        if (is_raster)
-            pen_x += (slot->advance.x + 32) >> 6;  // これも試す
-        else
-            pen_x += slot->advance.x >> 6;
+        pen_x += slot->advance.x >> 6;
     }
 
     if (face_needs_done)
@@ -988,13 +1039,24 @@ void AppMain(void)
     int line_height = abs(FONT_SIZE) + 8;
     int start_y = abs(FONT_SIZE) + 10;
 
+    XFORM xform;
+    xform.eM11 = 1;
+    xform.eM12 = 0;
+    xform.eM21 = 0;
+    xform.eM22 = 1;
+    xform.eDx = 0;
+    xform.eDy = 0;
+
     for (int i = 0; i < num_lines; ++i)
     {
+        ModifyWorldTransform(hDC, NULL, MWT_IDENTITY);
         SetBkMode(hDC, OPAQUE);
         SetBkColor(hDC, BG);
         SetTextColor(hDC, FG);
         draw_text_wide(hDC, 10, start_y + i * line_height,
-            lines[i], lstrlenW(lines[i]), font_info, FONT_SIZE);
+            lines[i], lstrlenW(lines[i]), font_info, FONT_SIZE, &xform);
+
+        SetWorldTransform(hDC, &xform);
 
         LOGFONTA lf;
         memset(&lf, 0, sizeof(lf));
