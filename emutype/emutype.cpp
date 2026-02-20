@@ -17,6 +17,9 @@
 
 #include "SaveBitmapToFile.h"
 
+#define MAKE_SURROGATE_PAIR(w1, w2) \
+    (0x10000 + (((DWORD)(w1) - HIGH_SURROGATE_START) << 10) + ((DWORD)(w2) - LOW_SURROGATE_START));
+
 // 今回は別のレジストリキーでテストする。
 const char* reg_key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
 
@@ -214,29 +217,37 @@ static std::string get_style_name(FT_Face face, bool localized)
     return face->style_name ? face->style_name : "";
 }
 
-bool fill_raster_text_metrics(FT_Face face, FT_WinFNT_HeaderRec *pWinFNT, FontInfo* info) {
+bool fill_raster_text_metrics(FT_Face face, FontInfo* info) {
+    FT_WinFNT_HeaderRec WinFNT;
+    if (FT_Get_WinFNT_Header(face, &WinFNT) != 0)
+        return false;
+
+    info->charset = WinFNT.charset;
+    info->raster_height = WinFNT.pixel_height;
+
     info->potm = (OUTLINETEXTMETRICW*)calloc(1, sizeof(OUTLINETEXTMETRICW));
     if (!info->potm)
-        return FALSE;
+        return false;
+
     info->potm->otmSize = sizeof(TEXTMETRICW);
     TEXTMETRICW* tm = &info->potm->otmTextMetrics;
-    tm->tmHeight           = pWinFNT->pixel_height;
-    tm->tmAscent           = pWinFNT->ascent;
+    tm->tmHeight           = WinFNT->pixel_height;
+    tm->tmAscent           = WinFNT->ascent;
     tm->tmDescent          = tm->tmHeight - tm->tmAscent;
-    tm->tmInternalLeading  = pWinFNT->internal_leading;
-    tm->tmExternalLeading  = pWinFNT->external_leading;
-    tm->tmAveCharWidth     = pWinFNT->avg_width;
-    tm->tmMaxCharWidth     = pWinFNT->max_width;
-    tm->tmWeight           = pWinFNT->weight;
-    tm->tmItalic           = pWinFNT->italic;
-    tm->tmUnderlined       = pWinFNT->underline;
-    tm->tmStruckOut        = pWinFNT->strike_out;
-    tm->tmFirstChar        = pWinFNT->first_char;
-    tm->tmLastChar         = pWinFNT->last_char;
-    tm->tmDefaultChar      = pWinFNT->default_char;
-    tm->tmBreakChar        = pWinFNT->break_char;
-    tm->tmCharSet          = pWinFNT->charset;
-    tm->tmPitchAndFamily   = pWinFNT->pitch_and_family;
+    tm->tmInternalLeading  = WinFNT->internal_leading;
+    tm->tmExternalLeading  = WinFNT->external_leading;
+    tm->tmAveCharWidth     = WinFNT->avg_width;
+    tm->tmMaxCharWidth     = WinFNT->max_width;
+    tm->tmWeight           = WinFNT->weight;
+    tm->tmItalic           = WinFNT->italic;
+    tm->tmUnderlined       = WinFNT->underline;
+    tm->tmStruckOut        = WinFNT->strike_out;
+    tm->tmFirstChar        = WinFNT->first_char;
+    tm->tmLastChar         = WinFNT->last_char;
+    tm->tmDefaultChar      = WinFNT->default_char;
+    tm->tmBreakChar        = WinFNT->break_char;
+    tm->tmCharSet          = WinFNT->charset;
+    tm->tmPitchAndFamily   = WinFNT->pitch_and_family;
     return TRUE;
 }
 
@@ -327,27 +338,19 @@ bool load_font(const char *path, int index)
     info->em_ascender  = face->ascender;
     info->em_descender = face->descender;
     info->em_units     = face->units_per_EM;
-    info->charset = 0xFF; // 不明
+    info->charset = 0xFF; // unknown
     info->raster_height = 0;
     info->potm = NULL;
 
     if (FT_IS_SFNT(face))
     {
-        fill_outline_text_metrics(face, info);
+        if (!fill_outline_text_metrics(face, info))
+            return false;
     }
     else
     {
-        FT_WinFNT_HeaderRec fnt_header;
-        if (FT_Get_WinFNT_Header(face, &fnt_header) == 0)
-        {
-            info->charset = fnt_header.charset;
-            info->raster_height = fnt_header.pixel_height;
-            fill_raster_text_metrics(face, &fnt_header, info);
-        }
-        else
-        {
+        if (!fill_raster_text_metrics(face, info))
             return false;
-        }
     }
 
     registered_fonts.push_back(info);
@@ -358,7 +361,7 @@ bool load_font(const char *path, int index)
     {
         for (FT_Long iFace = 1; iFace < num_faces; ++iFace)
         {
-            if (!load_font(path, static_cast<int>(iFace)))
+            if (!load_font(path, iFace))
                 return false;
         }
     }
@@ -813,17 +816,15 @@ void draw_text_wide(HDC hDC, int x, int y, const WCHAR* wide_text, INT cch,
     for (INT i = 0; i < cch; ++i)
     {
         unsigned long codepoint = 0;
-        WCHAR w = pch[i];
-        if (IS_HIGH_SURROGATE(w) && i + 1 < cch) {
+        WCHAR w1 = pch[i];
+        if (IS_HIGH_SURROGATE(w1) && i + 1 < cch) {
             WCHAR w2 = pch[i + 1];
             if (IS_LOW_SURROGATE(w2)) {
-                codepoint = 0x10000UL
-                    + (static_cast<unsigned long>(w  - 0xD800) << 10)
-                    +  static_cast<unsigned long>(w2 - 0xDC00);
+                codepoint = MAKE_SURROGATE_PAIR(w1, w2);
                 ++i;
             }
         } else {
-            codepoint = static_cast<unsigned long>(w);
+            codepoint = w1;
         }
 
         FT_UInt glyph_index;
