@@ -1,0 +1,56 @@
+Using font: C:\Windows\Fonts\sserife.fon
+Selected size: 24 px (requested 24)
+metrics: ascender=19, descender=-5, height=24
+first_char=0x20, last_char=0xFF, default_char=0x61
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0046: bitmap=13x24, advance.x=832 (>>6=13), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0072: bitmap=11x24, advance.x=704 (>>6=11), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0065: bitmap=11x24, advance.x=704 (>>6=11), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0065: bitmap=11x24, advance.x=704 (>>6=11), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0054: bitmap=12x24, advance.x=768 (>>6=12), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0079: bitmap=10x24, advance.x=640 (>>6=10), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0070: bitmap=11x24, advance.x=704 (>>6=11), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0065: bitmap=11x24, advance.x=704 (>>6=11), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0020: bitmap=6x24, advance.x=384 (>>6=6), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0044: bitmap=13x24, advance.x=832 (>>6=13), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0072: bitmap=11x24, advance.x=704 (>>6=11), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0061: bitmap=6x24, advance.x=384 (>>6=6), bitmap_left=0, bitmap_top=19
+num_charmaps=1
+  charmap[0]: platform=0, encoding=0, encoding_id=0
+active charmap: platform=-1, encoding=-1
+glyph U+0077: bitmap=9x24, advance.x=576 (>>6=9), bitmap_left=0, bitmap_top=19
