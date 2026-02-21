@@ -16,6 +16,7 @@
 #include FT_TRUETYPE_IDS_H
 #include FT_TRUETYPE_TABLES_H
 #include FT_WINFONTS_H
+#include FT_LCD_FILTER_H
 
 #include "SaveBitmapToFile.h"
 #include "nearly_equal_bitmap.h"
@@ -725,6 +726,8 @@ BOOL InitFontSupport(VOID)
         return FALSE;
     }
 
+    FT_Library_SetLcdFilter(library, FT_LCD_FILTER_DEFAULT);
+
     error = FTC_Manager_New(library, 0, 0, 0, requester, NULL, &cache_manager);
     if (error) {
         printf("FTC_Manager_New: %d\n", error);
@@ -834,17 +837,21 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
     HBITMAP hbmSrc = CreateCompatibleBitmap(hdc, w, h);
     HGDIOBJ hbmSrcOld = SelectObject(hdcSrc, hbmSrc);
 
+    if (bkMode == OPAQUE) {
+        HBRUSH hbrBg = CreateSolidBrush(bg_color);
+        RECT rc = { left, top, left + w, top + h };
+        FillRect(hdc, &rc, hbrBg);
+        DeleteObject(hbrBg);
+    }
+
     if (bitmap->pixel_mode == FT_PIXEL_MODE_MONO)
     {
         // --- Monochrome (1bpp) processing ---
-        // (omitted: existing MaskBlt-based implementation is fine)
-        // However, when OPAQUE, background fill processing is required.
-        if (bkMode == OPAQUE) {
-            HBRUSH hbrBg = CreateSolidBrush(bg_color);
-            RECT rc = {0, 0, w, h};
-            FillRect(hdc, &rc, hbrBg);
-            DeleteObject(hbrBg);
-        }
+
+        HBRUSH hbrFg = CreateSolidBrush(fg_color);
+        RECT rcSrc = { 0, 0, w, h };
+        FillRect(hdcSrc, &rcSrc, hbrFg);
+        DeleteObject(hbrFg);
 
         if (w > hbmMask_cache_w || h > hbmMask_cache_h)
         {
@@ -855,7 +862,7 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
         }
 
         int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
-        int row_bytes = (w + 7) / 8; // DIB 1bpp row bytes are DWORD-aligned
+        int row_bytes = (w + 7) / 8;
         int dib_stride = (row_bytes + 3) & ~3; // DWORD align
 
         std::vector<BYTE> packed(dib_stride * h, 0);
@@ -865,25 +872,19 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                    row_bytes);
 
         // Pass as top-down DIB by setting biHeight negative
-        BITMAPINFO bmiMono = {};
-        bmiMono.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-        bmiMono.bmiHeader.biWidth       = w;
-        bmiMono.bmiHeader.biHeight      = -h; // top-down
-        bmiMono.bmiHeader.biPlanes      = 1;
-        bmiMono.bmiHeader.biBitCount    = 1;
-        bmiMono.bmiHeader.biCompression = BI_RGB;
-        // 1bpp DIB color table: index 0 = black (background), index 1 = white (foreground)
-        bmiMono.bmiColors[0] = { 0,   0,   0, 0 };
-        // bmiColors[1] is not included in the default BITMAPINFO structure, so allocate separately
         struct { BITMAPINFOHEADER bih; RGBQUAD colors[2]; } bmiMono2 = {};
-        bmiMono2.bih = bmiMono.bmiHeader;
-        bmiMono2.colors[0] = { 0,   0,   0, 0 }; // black
-        bmiMono2.colors[1] = { 255, 255, 255, 0 }; // white
+        bmiMono2.bih.biSize        = sizeof(BITMAPINFOHEADER);
+        bmiMono2.bih.biWidth       = w;
+        bmiMono2.bih.biHeight      = -h; // top-down
+        bmiMono2.bih.biPlanes      = 1;
+        bmiMono2.bih.biBitCount    = 1;
+        bmiMono2.bih.biCompression = BI_RGB;
+        bmiMono2.colors[0] = { 0,   0,   0,   0 }; // index 0 = black
+        bmiMono2.colors[1] = { 255, 255, 255, 0 }; // index 1 = white
 
         SetDIBits(NULL, hbmMask_cache, 0, h, packed.data(),
                   reinterpret_cast<BITMAPINFO*>(&bmiMono2), DIB_RGB_COLORS);
 
-        // MaskBlt: mask=1 -> transfer foreground color from hdcSrc; mask=0 -> keep destination
         MaskBlt(hdc, left, top, w, h,
                 hdcSrc, 0, 0,
                 hbmMask_cache, 0, 0,
@@ -891,28 +892,82 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
 
         // Do not DeleteObject hbmMask_cache as it is reused
     }
+    else if (bitmap->pixel_mode == FT_PIXEL_MODE_LCD)
+    {
+        int logical_w = w / 3;
+
+        HDC hdcWork = CreateCompatibleDC(hdc);
+        HBITMAP hbmWork = CreateCompatibleBitmap(hdc, logical_w, h);
+        HGDIOBJ hbmWorkOld = SelectObject(hdcWork, hbmWork);
+
+        BitBlt(hdcWork, 0, 0, logical_w, h, hdc, left, top, SRCCOPY);
+
+        std::vector<DWORD> pixels(logical_w * h);
+        BITMAPINFO bmi = { 0 };
+        bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth       = logical_w;
+        bmi.bmiHeader.biHeight      = -h; // top-down
+        bmi.bmiHeader.biPlanes      = 1;
+        bmi.bmiHeader.biBitCount    = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        GetDIBits(hdcWork, hbmWork, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
+
+        int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
+
+        for (int row = 0; row < h; ++row)
+        {
+            for (int col = 0; col < logical_w; ++col)
+            {
+                unsigned char R_sub = bitmap->buffer[row * src_pitch + col * 3 + 0];
+                unsigned char G_sub = bitmap->buffer[row * src_pitch + col * 3 + 1];
+                unsigned char B_sub = bitmap->buffer[row * src_pitch + col * 3 + 2];
+
+                if (R_sub == 0 && G_sub == 0 && B_sub == 0) continue;
+
+                COLORREF target_bg;
+                if (bkMode == TRANSPARENT) {
+                    DWORD pixel = pixels[row * logical_w + col];
+                    target_bg = RGB(GetBValue(pixel), GetGValue(pixel), GetRValue(pixel));
+                } else {
+                    target_bg = bg_color;
+                }
+
+                // チャンネルごとに独立してアルファブレンド
+                int r = (GetRValue(fg_color) * R_sub + GetRValue(target_bg) * (255 - R_sub)) / 255;
+                int g = (GetGValue(fg_color) * G_sub + GetGValue(target_bg) * (255 - G_sub)) / 255;
+                int b = (GetBValue(fg_color) * B_sub + GetBValue(target_bg) * (255 - B_sub)) / 255;
+
+                pixels[row * logical_w + col] = ((DWORD)b << 16) | ((DWORD)g << 8) | (DWORD)r;
+            }
+        }
+
+        SetDIBits(hdcWork, hbmWork, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
+        BitBlt(hdc, left, top, logical_w, h, hdcWork, 0, 0, SRCCOPY);
+
+        SelectObject(hdcWork, hbmWorkOld);
+        DeleteObject(hbmWork);
+        DeleteDC(hdcWork);
+    }
     else
     {
         // --- Grayscale (8bpp) processing ---
-        
-        // 1. Get current pixels at the destination (for TRANSPARENT mode)
-        // Copy the background from hdc to hdcSrc via BitBlt
+
         BitBlt(hdcSrc, 0, 0, w, h, hdc, left, top, SRCCOPY);
 
         std::vector<DWORD> pixels(w * h);
-        BITMAPINFO bmi = {0};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = w;
-        bmi.bmiHeader.biHeight = -h; // top-down
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
+        BITMAPINFO bmi = { 0 };
+        bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth       = w;
+        bmi.bmiHeader.biHeight      = -h; // top-down
+        bmi.bmiHeader.biPlanes      = 1;
+        bmi.bmiHeader.biBitCount    = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
 
-        // Retrieve current background pixels into array
         GetDIBits(hdcSrc, hbmSrc, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
 
         int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
-        
+
         for (int row = 0; row < h; ++row)
         {
             for (int col = 0; col < w; ++col)
@@ -920,27 +975,21 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                 unsigned char alpha = bitmap->buffer[row * src_pitch + col];
                 if (alpha == 0) continue;
 
-                // 2. Determine the background color to blend against
                 COLORREF target_bg;
                 if (bkMode == TRANSPARENT) {
-                    // Transparent background: use current pixel at the destination (BGR)
                     DWORD pixel = pixels[row * w + col];
-                    target_bg = RGB(GetRValue(pixel), GetGValue(pixel), GetBValue(pixel));
+                    target_bg = RGB(GetBValue(pixel), GetGValue(pixel), GetRValue(pixel));
                 } else {
-                    // Opaque background: use GetBkColor
                     target_bg = bg_color;
                 }
 
-                // 3. Alpha blend calculation
                 int r = (GetRValue(fg_color) * alpha + GetRValue(target_bg) * (255 - alpha)) / 255;
                 int g = (GetGValue(fg_color) * alpha + GetGValue(target_bg) * (255 - alpha)) / 255;
                 int b = (GetBValue(fg_color) * alpha + GetBValue(target_bg) * (255 - alpha)) / 255;
-                
-                pixels[row * w + col] = RGB(r, g, b);
+                pixels[row * w + col] = ((DWORD)b << 16) | ((DWORD)g << 8) | (DWORD)r;
             }
         }
 
-        // 4. Write back the composited pixels
         SetDIBits(hdcSrc, hbmSrc, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
         BitBlt(hdc, left, top, w, h, hdcSrc, 0, 0, SRCCOPY);
     }
@@ -1105,7 +1154,7 @@ BOOL EmulatedExtTextOutW(
     }
     else
     {
-        load_flags = FT_LOAD_RENDER;
+        load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD;
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
