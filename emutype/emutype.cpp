@@ -116,8 +116,7 @@ int calc_pixel_size_from_cell_height(FontInfo* font_info, int cell_height_px)
     FT_Long em_descender = font_info->em_descender;
     FT_Long em_units     = font_info->em_units;
     FT_Long em_cell = em_ascender - em_descender;
-    int pixel_size = static_cast<int>(
-        static_cast<double>(cell_height_px) * em_units / em_cell + 0.5);
+    int pixel_size = static_cast<int>(static_cast<double>(cell_height_px) * em_units / em_cell);
     return pixel_size;
 }
 
@@ -1008,18 +1007,17 @@ void EmulatedExtTextOutW(
     }
 
     int baseline_y   = Y + pixel_ascent;
-    int pen_x        = X;
 
     FT_Int32 load_flags;
     if (is_raster)
     {
         // ラスタフォントは必ずモノクロビットマップで取得する
         // FT_LOAD_NO_SCALEは固定サイズそのものを使う指示
-        load_flags = FT_LOAD_TARGET_NORMAL | FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING;
+        load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING;
     }
     else
     {
-        load_flags = FT_LOAD_TARGET_NORMAL | FT_LOAD_RENDER;
+        load_flags = FT_LOAD_RENDER;
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
@@ -1080,10 +1078,8 @@ void EmulatedExtTextOutW(
             glyph_index = FT_Get_Char_Index(face, codepoint);
         }
 
-        // --- カーニングの計算を追加 ---
         if (has_kerning && previous_glyph != 0 && glyph_index != 0) {
             FT_Vector delta;
-            // FT_KERNING_DEFAULT: ヒンティング済みのグリフに合わせたカーニング量を取得
             FT_Get_Kerning(face, previous_glyph, glyph_index, FT_KERNING_DEFAULT, &delta);
             current_pen_x += delta.x;
         }
