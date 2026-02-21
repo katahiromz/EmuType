@@ -32,7 +32,7 @@ const COLORREF BG = RGB(255, 255, 0);
 const COLORREF FG = RGB(0,   0,   0);
 const char* FONT_NAME = "Tahoma";
 const LONG FONT_SIZE = 30;
-const WCHAR* text = L"FreeType Draw";
+const WCHAR* text = L"iiiiiiiiiiiiiiiiiiiiii";
 const COLORREF color1 = RGB(0, 0, 0);
 const COLORREF color2 = RGB(255, 255, 0);
 
@@ -129,7 +129,7 @@ int calc_pixel_size_from_cell_height(FontInfo* font_info, int cell_height_px)
     FT_Long em_descender = font_info->em_descender;
     FT_Long em_units     = font_info->em_units;
     FT_Long em_cell = em_ascender - em_descender;
-    int pixel_size = static_cast<int>(static_cast<double>(cell_height_px) * em_units / em_cell);
+    int pixel_size = static_cast<int>(static_cast<double>(cell_height_px) * em_units / em_cell + 0.5);
     return pixel_size;
 }
 
@@ -933,7 +933,6 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                     target_bg = bg_color;
                 }
 
-                // チャンネルごとに独立してアルファブレンド
                 int r = (GetRValue(fg_color) * R_sub + GetRValue(target_bg) * (255 - R_sub)) / 255;
                 int g = (GetGValue(fg_color) * G_sub + GetGValue(target_bg) * (255 - G_sub)) / 255;
                 int b = (GetBValue(fg_color) * B_sub + GetBValue(target_bg) * (255 - B_sub)) / 255;
@@ -1084,7 +1083,7 @@ BOOL EmulatedExtTextOutW(
 
     FT_WinFNT_HeaderRec WinFNT;
     bool has_fnt_header = false;
-    int pixel_ascent;
+    int pixel_ascent, baseline_y;
 
     if (is_raster)
     {
@@ -1116,7 +1115,8 @@ BOOL EmulatedExtTextOutW(
         printf("first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
             WinFNT.first_char, WinFNT.last_char, WinFNT.default_char);
 
-        pixel_ascent = face->size->metrics.ascender >> 6;
+        pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
+        baseline_y   = Y + pixel_ascent;
     }
     else
     {
@@ -1140,10 +1140,15 @@ BOOL EmulatedExtTextOutW(
             return FALSE;
         face = ft_size->face;
 
-        pixel_ascent = face->size->metrics.ascender >> 6;
-    }
+        TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+        if (os2) {
+            pixel_ascent = (int)(os2->usWinAscent * face->size->metrics.y_scale / 65536.0 + 32) >> 6;
+        } else {
+            pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
+        }
 
-    int baseline_y   = Y + pixel_ascent;
+        baseline_y = Y + pixel_ascent;
+    }
 
     FT_Int32 load_flags;
     if (is_raster)
@@ -1154,7 +1159,7 @@ BOOL EmulatedExtTextOutW(
     }
     else
     {
-        load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD;
+        load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD | FT_LOAD_FORCE_AUTOHINT;
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
@@ -1242,7 +1247,7 @@ BOOL EmulatedExtTextOutW(
         FT_GlyphSlot slot = face->glyph;
 
         int draw_x = (current_pen_x >> 6) + slot->bitmap_left;
-        int draw_y = (current_pen_y >> 6) - slot->bitmap_top;
+        int draw_y = baseline_y - slot->bitmap_top;
 
         draw_glyph(hdc, &slot->bitmap, draw_x, draw_y,
                    fg_color, bg_color);
@@ -1257,7 +1262,7 @@ BOOL EmulatedExtTextOutW(
             lpDx_accumulated += lpDx[i];
             current_pen_x = ((FT_Pos)X << 6) + ((FT_Pos)lpDx_accumulated << 6);
         } else {
-            current_pen_x += slot->advance.x;
+            current_pen_x += (face->glyph->advance.x + 63) & ~63;
         }
         previous_glyph = glyph_index;
     }
