@@ -925,7 +925,7 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                 if (bkMode == TRANSPARENT) {
                     // Transparent background: use current pixel at the destination (BGR)
                     DWORD pixel = pixels[row * w + col];
-                    target_bg = RGB(GetBValue(pixel), GetGValue(pixel), GetRValue(pixel));
+                    target_bg = RGB(GetRValue(pixel), GetGValue(pixel), GetBValue(pixel));
                 } else {
                     // Opaque background: use GetBkColor
                     target_bg = bg_color;
