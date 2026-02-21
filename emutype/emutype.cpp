@@ -1197,9 +1197,10 @@ HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform)
     RECT rc = { 0, 0, WIDTH, HEIGHT };
     FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-    SetBkMode(hdc, OPAQUE);
+    SetBkMode(hdc, TRANSPARENT);
     SetBkColor(hdc, BG);
     SetTextColor(hdc, FG);
+
     EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL,
                         font_info, font_size, &xform);
 
@@ -1221,8 +1222,11 @@ HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform)
     RECT rc = { 0, 0, WIDTH, HEIGHT };
     FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-    SetGraphicsMode(hdc, GM_ADVANCED);
+    SetBkMode(hdc, TRANSPARENT);
+    SetBkColor(hdc, BG);
+    SetTextColor(hdc, FG);
 
+    SetGraphicsMode(hdc, GM_ADVANCED);
     SetWorldTransform(hdc, &xform);
 
     LOGFONTA lf;
@@ -1246,13 +1250,23 @@ bool TestEntry(const char* font_name, int font_size, XFORM& xform)
 {
     HBITMAP hbm1 = TestFreeType(font_name, font_size, xform);
     HBITMAP hbm2 = TestGdi(font_name, font_size, xform);
+    if (!hbm1)
+        printf("!hbm1\n");
+    if (!hbm2)
+        printf("!hbm2\n");
     BOOL ret = nearly_equal_bitmap(hbm1, hbm2, 16);
+    if (ret)
+    {
+        printf("%s, %d: Success!\n", font_name, font_size);
+    }
+    else
+    {
+        printf("%s, %d: FAILED\n", font_name, font_size);
+        SaveBitmapToFile("a.bmp", hbm1);
+        SaveBitmapToFile("b.bmp", hbm2);
+    }
     DeleteObject(hbm2);
     DeleteObject(hbm1);
-    if (ret)
-        printf("%s, %d: Success!\n", font_name, font_size);
-    else
-        printf("%s, %d: FAILED\n", font_name, font_size);
     return ret;
 }
 
