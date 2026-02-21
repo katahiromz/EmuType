@@ -96,6 +96,7 @@ struct FontInfo {
     FT_Long em_units;
     BYTE charset;
     INT raster_height;
+    INT raster_internal_leading;
 };
 std::vector<FontInfo*> registered_fonts;
 
@@ -456,11 +457,12 @@ bool load_font(const char *path, int face_index)
     }
 
     FT_WinFNT_HeaderRec WinFNT;
-    INT raster_height = 0;
+    INT raster_height = 0, raster_internal_leading = 0;
     if (FT_Get_WinFNT_Header(face, &WinFNT) == 0)
     {
         charsets.push_back(WinFNT.charset);
-        raster_height = WinFNT.pixel_height - WinFNT.internal_leading;
+        raster_height = WinFNT.pixel_height;
+        raster_internal_leading = WinFNT.internal_leading;
     }
 
     if (charsets.empty())
@@ -473,6 +475,11 @@ bool load_font(const char *path, int face_index)
                 int height = face->available_sizes[i].height;
                 FT_Select_Size(face, i);
 
+                if (FT_Get_WinFNT_Header(face, &WinFNT) == 0)
+                {
+                    raster_height = WinFNT.pixel_height;
+                    raster_internal_leading = WinFNT.internal_leading;
+                }
                 FontInfo* info = new FontInfo();
                 info->path = path;
                 info->face_index = iStart;
@@ -483,7 +490,8 @@ bool load_font(const char *path, int face_index)
                 info->em_descender = face->descender;
                 info->em_units = face->units_per_EM;
                 info->charset = cs;
-                info->raster_height = height;
+                info->raster_height = raster_height;
+                info->raster_internal_leading = raster_internal_leading;
                 registered_fonts.push_back(info);
             }
         } else {
@@ -498,6 +506,7 @@ bool load_font(const char *path, int face_index)
             info->em_units = face->units_per_EM;
             info->charset = cs;
             info->raster_height = raster_height;
+            info->raster_internal_leading = raster_internal_leading;
             registered_fonts.push_back(info);
         }
     }
@@ -796,30 +805,32 @@ FontInfo* find_font_by_logfont(const LOGFONTA *plf)
     FontInfo* best = NULL;
     int total_penalty,best_penalty = INT_MAX;
 
-    for (auto* info : registered_fonts)
+    for (auto* font_info : registered_fonts)
     {
-        if (lstrcmpiA(info->family_name.c_str(), font_name) != 0)
+        if (lstrcmpiA(font_info->family_name.c_str(), font_name) != 0)
             continue;
 
-        if (!is_raster_font(info->path))
+        if (!is_raster_font(font_info->path))
         {
-            if (info->style_flags == style_flags)
-                return info;
+            if (font_info->style_flags == style_flags)
+                return font_info;
             continue;
         }
 
         int charset_penalty = 0, size_penalty = 0;
-        if (preferred_charset != DEFAULT_CHARSET && info->charset != preferred_charset)
+        if (preferred_charset != DEFAULT_CHARSET && font_info->charset != preferred_charset)
             charset_penalty += 10000;
 
-        if (is_raster_font(info->path))
+        if (is_raster_font(font_info->path))
         {
             int size;
-            if (preferred_height < 0 || preferred_height > 0)
-                size = labs(preferred_height);
+            if (preferred_height < 0)
+                size = labs(preferred_height) + font_info->raster_internal_leading;
+            else if (preferred_height > 0)
+                size = preferred_height;
             else
                 size = 12;
-            size_penalty = abs(info->raster_height - size);
+            size_penalty = abs(font_info->raster_height - size);
         }
 
         total_penalty = charset_penalty + size_penalty;
@@ -827,7 +838,7 @@ FontInfo* find_font_by_logfont(const LOGFONTA *plf)
         if (total_penalty < best_penalty)
         {
             best_penalty = total_penalty;
-            best = info;
+            best = font_info;
         }
     }
 
@@ -837,9 +848,9 @@ FontInfo* find_font_by_logfont(const LOGFONTA *plf)
     for (std::vector<FontInfo*>::iterator it = registered_fonts.begin();
          it != registered_fonts.end(); ++it)
     {
-        FontInfo* info = *it;
-        if (lstrcmpiA(info->family_name.c_str(), font_name) == 0)
-            return info;
+        FontInfo* font_info = *it;
+        if (lstrcmpiA(font_info->family_name.c_str(), font_name) == 0)
+            return font_info;
     }
 
     return NULL;
@@ -1117,14 +1128,18 @@ BOOL EmulatedExtTextOutW(
         face_needs_done = true;
 
         if (face->num_fixed_sizes > 0) {
-            // lfHeight に最も近いサイズを選ぶ
+            int target_cell;
+            if (lfHeight < 0)
+                target_cell = labs(lfHeight) + font_info->raster_internal_leading;
+            else
+                target_cell = abs(lfHeight);
+
             int best_idx = 0;
-            int best_diff = abs(face->available_sizes[0].height - abs(lfHeight));
+            int best_diff = abs(face->available_sizes[0].height - target_cell);
             for (int si = 1; si < face->num_fixed_sizes; ++si) {
-                int diff = abs(face->available_sizes[si].height - abs(lfHeight));
+                int diff = abs(face->available_sizes[si].height - target_cell);
                 if (diff < best_diff) { best_diff = diff; best_idx = si; }
             }
-
             FT_Select_Size(face, best_idx);
         }
 
