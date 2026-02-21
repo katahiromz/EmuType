@@ -26,11 +26,11 @@
 #define _TMPF_VARIABLE_PITCH TMPF_FIXED_PITCH // TMPF_FIXED_PITCH is a brain-dead API
 
 const int WIDTH  = 300;
-const int HEIGHT = 300;
+const int HEIGHT = 100;
 const COLORREF BG = RGB(255, 255, 0);
 const COLORREF FG = RGB(0,   0,   0);
-const char* FONT_NAME = "Courier New";
-const LONG FONT_SIZE = 20;
+const char* FONT_NAME = "Tahoma";
+const LONG FONT_SIZE = 30;
 const WCHAR* text = L"FreeType Draw";
 const COLORREF color1 = RGB(0, 0, 0);
 const COLORREF color2 = RGB(255, 255, 0);
@@ -757,8 +757,18 @@ VOID FreeFontSupport(VOID)
     DeleteObject(hbmMask_cache);
 }
 
-FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int preferred_height = 0, FT_Byte preferred_charset = ANSI_CHARSET)
+FontInfo* find_font_by_logfont(const LOGFONTA *plf)
 {
+    const char* font_name = plf->lfFaceName;
+    FT_Byte preferred_charset = plf->lfCharSet;
+    int preferred_height = plf->lfHeight;
+
+    FT_Long style_flags = 0;
+    if (plf->lfWeight > FW_NORMAL)
+        style_flags |= FT_STYLE_FLAG_BOLD;
+    if (plf->lfItalic)
+        style_flags |= FT_STYLE_FLAG_ITALIC;
+
     FontInfo* best = NULL;
     int total_penalty,best_penalty = INT_MAX;
 
@@ -774,15 +784,17 @@ FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int 
             continue;
         }
 
+        int charset_penalty = 0;
+        if (preferred_charset != DEFAULT_CHARSET && info->charset != preferred_charset)
+            charset_penalty += 10000;
+
         if (is_raster_font(info->path))
         {
-            int charset_penalty = (info->charset != preferred_charset) ? 10000 : 0;
-            int size_penalty    = abs(info->raster_height - preferred_height);
+            int size_penalty = abs(info->raster_height - preferred_height);
             total_penalty = charset_penalty + size_penalty;
         }
         else
         {
-            int charset_penalty = (info->charset != preferred_charset) ? 10000 : 0;
             total_penalty   = charset_penalty;
         }
 
@@ -803,6 +815,7 @@ FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int 
         if (lstrcmpiA(info->family_name.c_str(), font_name) == 0)
             return info;
     }
+
     return NULL;
 }
 
@@ -937,7 +950,7 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
     DeleteDC(hdcSrc);
 }
 
-void EmulatedExtTextOutW(
+BOOL EmulatedExtTextOutW(
     HDC hdc,
     INT X,
     INT Y,
@@ -1019,7 +1032,7 @@ void EmulatedExtTextOutW(
         // Raster fonts are opened directly without going through the cache
         if (FT_New_Face(library, font_info->path.c_str(),
                         font_info->face_index, &face) != 0)
-            return;
+            return FALSE;
         face_needs_done = true;
 
         // Select the fixed size closest to the requested size
@@ -1065,7 +1078,7 @@ void EmulatedExtTextOutW(
 
         FT_Size ft_size;
         if (FTC_Manager_LookupSize(cache_manager, &scaler, &ft_size) != 0)
-            return;
+            return FALSE;
         face = ft_size->face;
 
         pixel_ascent = face->size->metrics.ascender >> 6;
@@ -1186,15 +1199,20 @@ void EmulatedExtTextOutW(
 
     if (face_needs_done)
         FT_Done_Face(face);
+
+    return TRUE;
 }
 
-HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform)
+HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform, HFONT hFont)
 {
-    FontInfo* font_info = find_font_by_name(font_name, 0, font_size);
+    LOGFONTA lf;
+    GetObjectA(hFont, sizeof(lf), &lf);
+    FontInfo* font_info = find_font_by_logfont(&lf);
     if (!font_info) {
         printf("'%s': not found\n", font_name);
         return NULL;
     }
+
     printf("Using font: %s\n", font_info->path.c_str());
 
     HDC hScreenDC = GetDC(NULL);
@@ -1220,7 +1238,7 @@ HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform)
     return hbm;
 }
 
-HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform)
+HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform, HFONT hFont)
 {
     HDC hScreenDC = GetDC(NULL);
     HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
@@ -1239,16 +1257,9 @@ HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform)
     SetGraphicsMode(hdc, GM_ADVANCED);
     SetWorldTransform(hdc, &xform);
 
-    LOGFONTA lf;
-    memset(&lf, 0, sizeof(lf));
-    lf.lfHeight = font_size;
-    lstrcpyA(lf.lfFaceName, font_name);
-    lf.lfCharSet = DEFAULT_CHARSET;
-    HFONT hFont = CreateFontIndirectA(&lf);
     HGDIOBJ hFontOld = SelectObject(hdc, hFont);
     ExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
     SelectObject(hdc, hFontOld);
-    DeleteObject(hFont);
 
     SelectObject(hdc, hbmOld);
     DeleteDC(hdc);
@@ -1258,12 +1269,23 @@ HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform)
 
 bool TestEntry(const char* font_name, int font_size, XFORM& xform)
 {
-    HBITMAP hbm1 = TestFreeType(font_name, font_size, xform);
-    HBITMAP hbm2 = TestGdi(font_name, font_size, xform);
+    LOGFONTA lf;
+    memset(&lf, 0, sizeof(lf));
+    lf.lfHeight = font_size;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lstrcpyA(lf.lfFaceName, font_name);
+
+    HFONT hFont = CreateFontIndirectA(&lf);
+
+    HBITMAP hbm1 = TestFreeType(font_name, font_size, xform, hFont);
+    HBITMAP hbm2 = TestGdi(font_name, font_size, xform, hFont);
     if (!hbm1)
         printf("!hbm1\n");
     if (!hbm2)
         printf("!hbm2\n");
+
+    DeleteObject(hFont);
+
     BOOL ret = nearly_equal_bitmap(hbm1, hbm2, color1, color2);
     if (ret)
     {
