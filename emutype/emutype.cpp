@@ -988,16 +988,19 @@ void EmulatedExtTextOutW(
         FTC_ScalerRec scaler;
         scaler.face_id = static_cast<FTC_FaceID>(font_info);
         scaler.width   = 0;
+
         if (lfHeight < 0) {
-            // Cell Height 指定時
-            double cell_height_em = static_cast<double>(font_info->em_ascender - font_info->em_descender);
-            scaler.height = static_cast<FT_UInt>((static_cast<double>(-lfHeight) * font_info->em_units / cell_height_em) + 0.5);
+            // GDIの負の値：セル高さ（アセント+ディセント）をピクセルで指定
+            // scaler.pixel = 1 の場合、height は直接ピクセル値として扱われる
+            scaler.height = static_cast<FT_UInt>(-lfHeight);
         } else if (lfHeight > 0) {
-            // Character Height (EM Square) 指定時：そのままの値を渡す
-            scaler.height = static_cast<FT_UInt>(lfHeight);
+            // GDIの正の値：フォント全体の高さ（内部リーディングを含む）
+            // Windowsの挙動に合わせるなら、ここからリーディング分を引く計算が必要
+            scaler.height = static_cast<FT_UInt>(lfHeight); 
         } else {
             scaler.height = 12;
         }
+
         scaler.pixel = 1;
         scaler.x_res = 0;
         scaler.y_res = 0;
