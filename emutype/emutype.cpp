@@ -1,4 +1,6 @@
-// Windowsのフォントエンジンをエミュレートしたい
+// emutype.cpp --- Emulate the Windows font engine
+// Author: katahiromz
+// License: MIT
 #include <windows.h>
 #include <shlobj.h>
 #include <shlwapi.h>
@@ -21,7 +23,7 @@
 #define MAKE_SURROGATE_PAIR(w1, w2) \
     (0x10000 + (((DWORD)(w1) - HIGH_SURROGATE_START) << 10) + ((DWORD)(w2) - LOW_SURROGATE_START));
 
-#define _TMPF_VARIABLE_PITCH TMPF_FIXED_PITCH // TMPF_FIXED_PITCH is brain dead api
+#define _TMPF_VARIABLE_PITCH TMPF_FIXED_PITCH // TMPF_FIXED_PITCH is a brain-dead API
 
 const int WIDTH  = 300;
 const int HEIGHT = 300;
@@ -33,7 +35,7 @@ const WCHAR* text = L"FreeType Draw";
 const COLORREF color1 = RGB(0, 0, 0);
 const COLORREF color2 = RGB(255, 255, 0);
 
-// 今回は別のレジストリキーでテストする。
+// Using a different registry key for this test.
 const char* reg_key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
 
 /*
@@ -103,7 +105,7 @@ FTC_Manager cache_manager;
 HBITMAP hbmMask_cache = NULL;
 int hbmMask_cache_w = 0, hbmMask_cache_h = 0;
 
-// フォントの種類を判定するヘルパー
+// Helper to determine font type
 static bool is_raster_font(const std::string& path)
 {
     LPCSTR ext = PathFindExtensionA(path.c_str());
@@ -193,7 +195,7 @@ static std::string get_family_name(FT_Face face, bool localized)
         else if (sname.platform_id == TT_PLATFORM_MACINTOSH &&
                  sname.encoding_id == TT_MAC_ID_ROMAN)
         {
-            // Mac Roman: ASCII範囲であればそのまま使える
+            // Mac Roman: usable as-is within the ASCII range
             name = std::string(reinterpret_cast<const char*>(sname.string), sname.string_len);
             priority = 0;
         }
@@ -208,7 +210,7 @@ static std::string get_family_name(FT_Face face, bool localized)
     if (!best_name.empty())
         return best_name;
 
-    // フォールバック
+    // Fallback
     return face->family_name ? face->family_name : "";
 }
 
@@ -228,7 +230,7 @@ static std::string get_style_name(FT_Face face, bool localized)
         if (FT_Get_Sfnt_Name(face, i, &sname) != 0)
             continue;
 
-        // TT_NAME_ID_FONT_SUBFAMILY は "Regular" や "Bold" などのスタイル名を指す
+        // TT_NAME_ID_FONT_SUBFAMILY refers to style names such as "Regular" or "Bold"
         if (sname.name_id != TT_NAME_ID_FONT_SUBFAMILY)
             continue;
 
@@ -238,7 +240,7 @@ static std::string get_style_name(FT_Face face, bool localized)
         if (sname.platform_id == TT_PLATFORM_MICROSOFT &&
             sname.encoding_id == TT_MS_ID_UNICODE_CS)
         {
-            // UTF-16BE から UTF-8 への変換
+            // Convert from UTF-16BE to UTF-8
             int wlen = static_cast<int>(sname.string_len) / 2;
             std::vector<wchar_t> wbuf(wlen + 1, 0);
             for (int j = 0; j < wlen; ++j)
@@ -278,7 +280,7 @@ static std::string get_style_name(FT_Face face, bool localized)
     if (!best_name.empty())
         return best_name;
 
-    // フォールバック: FreeTypeがデフォルトで保持しているスタイル名を使用
+    // Fallback: use the style name held by FreeType by default
     return face->style_name ? face->style_name : "";
 }
 
@@ -311,7 +313,7 @@ TEXTMETRICW* get_raster_text_metrics(FT_Face face, FontInfo* info) {
     return ptm;
 }
 
-// UTF-8文字列をstd::wstring(UTF-16)に変換する
+// Convert a UTF-8 string to std::wstring (UTF-16)
 static std::wstring utf8_to_wide(const std::string& utf8) {
     if (utf8.empty()) return L"";
     int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, NULL, 0);
@@ -325,14 +327,14 @@ static void copy_str_to_otm(const std::wstring& src, PSTR& dest_member, BYTE*& p
     size_t bsize = (src.length() + 1) * sizeof(WCHAR);
     memcpy(pStrBase, src.c_str(), bsize);
     dest_member = (PSTR)(pStrBase - (BYTE*)0);
-    pStrBase += bsize; // 書き込み位置を次に進める
+    pStrBase += bsize; // Advance write position to next slot
 }
 
 OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
     if (!FT_IS_SFNT(face))
         return NULL;
 
-    // 1. 各種文字列の準備
+    // 1. Prepare each string
     std::string family_utf8 = get_family_name(face, true);
     std::string style_utf8  = get_style_name(face, true);
     std::string face_utf8   = family_utf8 + (style_utf8.empty() ? "" : " " + style_utf8);
@@ -350,18 +352,18 @@ OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
         return NULL;
     potm->otmSize = (UINT)total_size;
 
-    // テーブル取得
+    // Retrieve tables
     TT_OS2* pOS2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
     TT_Postscript* post = (TT_Postscript*)FT_Get_Sfnt_Table(face, FT_SFNT_POST);
 
-    // --- スケーリング用マクロ ---
-    // GDIのOUTLINETEXTMETRICは、現在のデバイスコンテキストの解像度に基づいたピクセル値を返します。
+    // --- Scaling macros ---
+    // GDI's OUTLINETEXTMETRIC returns pixel values based on the current device context resolution.
     FT_Fixed x_scale = face->size->metrics.x_scale;
     FT_Fixed y_scale = face->size->metrics.y_scale;
     auto ScaleX = [&](FT_Short v) { return (LONG)((FT_MulFix(v, x_scale) + 32) >> 6); };
     auto ScaleY = [&](FT_Short v) { return (LONG)((FT_MulFix(v, y_scale) + 32) >> 6); };
 
-    // --- 1. TEXTMETRICW (デバイス依存のピクセル値) ---
+    // --- 1. TEXTMETRICW (device-dependent pixel values) ---
     TEXTMETRICW* tm = &potm->otmTextMetrics;
     tm->tmAscent  = (LONG)((face->size->metrics.ascender + 32) >> 6);
     tm->tmDescent = (LONG)((-face->size->metrics.descender + 32) >> 6);
@@ -370,8 +372,8 @@ OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
     if (tm->tmInternalLeading < 0) tm->tmInternalLeading = 0;
     tm->tmExternalLeading = (LONG)((face->size->metrics.height + 32) >> 6) - tm->tmHeight;
     
-    // 平均文字幅の計算 (OS/2テーブルがあれば xAvgCharWidth を使用)
-    tm->tmAveCharWidth = (pOS2) ? ScaleX(pOS2->xAvgCharWidth) : (LONG)((face->size->metrics.max_advance + 32) >> 12); // 簡易計算
+    // Average character width calculation (use xAvgCharWidth from OS/2 table if available)
+    tm->tmAveCharWidth = (pOS2) ? ScaleX(pOS2->xAvgCharWidth) : (LONG)((face->size->metrics.max_advance + 32) >> 12); // simplified calculation
     tm->tmMaxCharWidth = (LONG)((face->size->metrics.max_advance + 32) >> 6);
 
     tm->tmWeight    = (pOS2) ? pOS2->usWeightClass : ((face->style_flags & FT_STYLE_FLAG_BOLD) ? FW_BOLD : FW_NORMAL);
@@ -381,12 +383,12 @@ OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
     tm->tmPitchAndFamily = (face->face_flags & FT_FACE_FLAG_FIXED_WIDTH) ? 0 : (_TMPF_VARIABLE_PITCH | TMPF_TRUETYPE | TMPF_VECTOR);
     tm->tmCharSet = charset;
 
-    // --- 2. OUTLINETEXTMETRICW (詳細メトリクス) ---
+    // --- 2. OUTLINETEXTMETRICW (detailed metrics) ---
     potm->otmEMSquare = face->units_per_EM;
     potm->otmfsSelection = (pOS2) ? pOS2->fsSelection : 0;
     potm->otmfsType = (pOS2) ? pOS2->fsType : 0;
 
-    // 下線・取消線 (EM単位ではなくピクセル単位)
+    // Underline and strikeout (in pixels, not EM units)
     if (pOS2) {
         potm->otmsStrikeoutSize = ScaleY(pOS2->yStrikeoutSize);
         potm->otmsStrikeoutPosition = ScaleY(pOS2->yStrikeoutPosition);
@@ -396,30 +398,30 @@ OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
         potm->otmsUnderscorePosition = ScaleY(post->underlinePosition);
     }
 
-    // FontBox (ピクセル単位)
+    // FontBox (in pixels)
     potm->otmrcFontBox.left   = ScaleX(face->bbox.xMin);
     potm->otmrcFontBox.right  = ScaleX(face->bbox.xMax);
     potm->otmrcFontBox.top    = ScaleY(face->bbox.yMax);
     potm->otmrcFontBox.bottom = ScaleY(face->bbox.yMin);
 
-    // タイポグラフィ用 (sTypo系をピクセル変換)
+    // Typographic values (convert sTypo* to pixels)
     if (pOS2) {
         potm->otmAscent  = ScaleY(pOS2->sTypoAscender);
         potm->otmDescent = ScaleY(pOS2->sTypoDescender);
         potm->otmLineGap = ScaleY(pOS2->sTypoLineGap);
-        potm->otmMacAscent  = ScaleY(pOS2->sTypoAscender); // WindowsではTypo値を入れることが多い
+        potm->otmMacAscent  = ScaleY(pOS2->sTypoAscender); // Windows commonly stores Typo values here
         potm->otmMacDescent = ScaleY(pOS2->sTypoDescender);
         potm->otmMacLineGap = ScaleY(pOS2->sTypoLineGap);
         memcpy(&potm->otmPanoseNumber, &pOS2->panose, 10);
     }
 
-    // --- 3. 文字列ポインタの設定 ---
-    // otmpFamilyName 等には「構造体の先頭からのバイトオフセット」を入れる
+    // --- 3. Set string pointers ---
+    // Store byte offsets from the start of the structure in otmpFamilyName etc.
     BYTE* pStrBase = (BYTE*)potm + sizeof(OUTLINETEXTMETRICW);
     auto SetString = [&](const std::wstring& s, PSTR& member) {
         size_t len = (s.length() + 1) * sizeof(WCHAR);
         memcpy(pStrBase, s.c_str(), len);
-        member = (PSTR)(pStrBase - (BYTE*)potm); // オフセットとして格納
+        member = (PSTR)(pStrBase - (BYTE*)potm); // Store as offset
         pStrBase += len;
     };
 
@@ -444,9 +446,9 @@ bool load_font(const char *path, int face_index)
 
     TT_OS2* pOS2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
     if (pOS2) {
-        // ulCodePageRange1 のビットを走査して g_FontTci と照らし合わせる
+        // Scan bits of ulCodePageRange1 and compare against g_FontTci
         for (int i = 0; i < MAXTCIINDEX; i++) {
-            if (g_FontTci[i].fs.fsCsb[0] & (1 << i)) { // 簡易的な判定
+            if (g_FontTci[i].fs.fsCsb[0] & (1 << i)) { // simplified check
                 charsets.push_back(g_FontTci[i].ciCharset);
             }
         }
@@ -501,7 +503,7 @@ void free_fonts(void)
     registered_fonts.clear();
 }
 
-// ラスタフォントの利用可能サイズ一覧を "8,10,12" 形式で返す
+// Return the list of available sizes for a raster font as a string like "8,10,12"
 static std::string get_raster_sizes(FT_Face face)
 {
     std::string result;
@@ -510,23 +512,23 @@ static std::string get_raster_sizes(FT_Face face)
         if (!result.empty())
             result += ",";
         char buf[16];
-        // fixed_sizes[i].height はピクセル単位
+        // fixed_sizes[i].height is in pixels
         _snprintf(buf, sizeof(buf), "%d", static_cast<int>(face->available_sizes[i].height));
         result += buf;
     }
     return result;
 }
 
-// 同一ファイルのFontInfoをまとめて値名を生成する
+// Generate a registry value name by grouping FontInfos from the same file.
 // TrueType / OpenType: "MS Gothic & MS UI Gothic & MS PGothic (TrueType)"
-// ラスタ:   "MS Sans Serif 8,10,12,14,18,24"
+// Raster:              "MS Sans Serif 8,10,12,14,18,24"
 static std::string make_registry_value_name(
     const std::vector<FontInfo*>& group, FT_Face first_face)
 {
     bool raster = is_raster_font(group[0]->path);
     if (raster)
     {
-        // ラスタフォントはサイズ列を付ける（Windows互換）
+        // Raster fonts include a size list (Windows-compatible)
         std::string sizes = get_raster_sizes(first_face);
         std::string name = group[0]->family_name;
         if (!sizes.empty())
@@ -534,8 +536,8 @@ static std::string make_registry_value_name(
         return name;
     }
 
-    // アウトラインフォント: グループ内の全family_nameを & で連結
-    // （重複は除く）
+    // Outline fonts: concatenate all family_names in the group with " & "
+    // (duplicates are removed)
     std::vector<std::string> names;
     for (std::vector<FontInfo*>::const_iterator it = group.begin();
          it != group.end(); ++it)
@@ -568,7 +570,7 @@ static std::string make_registry_value_name(
 
 void write_fonts_to_registry(HKEY hKey)
 {
-    // 既存の値をすべて削除
+    // Delete all existing values
     WCHAR szValue[MAX_PATH];
     for (;;) {
         DWORD cchValue = _countof(szValue);
@@ -577,7 +579,7 @@ void write_fonts_to_registry(HKEY hKey)
         RegDeleteValueW(hKey, szValue);
     }
 
-    // パスでグループ化
+    // Group by path
     typedef std::pair<std::string, std::vector<FontInfo*> > FontGroup;
     std::vector<FontGroup> groups;
 
@@ -608,7 +610,7 @@ void write_fonts_to_registry(HKEY hKey)
         const std::string& path = gi->first;
         const std::vector<FontInfo*>& group = gi->second;
 
-        // 値名生成のためにフェイスを一時オープン
+        // Temporarily open the face to generate the value name
         FT_Face first_face;
         if (FT_New_Face(library, path.c_str(), group[0]->face_index, &first_face) != 0)
             continue;
@@ -616,14 +618,14 @@ void write_fonts_to_registry(HKEY hKey)
         std::string value_name = make_registry_value_name(group, first_face);
         FT_Done_Face(first_face);
 
-        // 値データ: ファイル名のみ（Windowsレジストリに合わせる）
+        // Value data: filename only (matching the Windows registry format)
         char filename[MAX_PATH];
         if (path.find(fonts_dir) == 0)
             lstrcpynA(filename, PathFindFileNameA(path.c_str()), MAX_PATH);
         else
             lstrcpynA(filename, path.c_str(), MAX_PATH);
 
-        // value_name (UTF-8) → UTF-16 変換
+        // Convert value_name (UTF-8) to UTF-16
         int wname_len = MultiByteToWideChar(CP_UTF8, 0,
                                             value_name.c_str(), -1,
                                             NULL, 0);
@@ -632,7 +634,7 @@ void write_fonts_to_registry(HKEY hKey)
                             value_name.c_str(), -1,
                             &wname[0], wname_len);
 
-        // filename (システムデフォルトACP) → UTF-16 変換
+        // Convert filename (system default ACP) to UTF-16
         int wdata_len = MultiByteToWideChar(CP_ACP, 0,
                                             filename, -1,
                                             NULL, 0);
@@ -667,7 +669,7 @@ void read_fonts_from_registry(HKEY hKey)
         if (status != ERROR_SUCCESS || type != REG_SZ)
             continue;
 
-        // フルパスに変換
+        // Convert to full path
         char full_path[MAX_PATH];
         if (PathIsRelativeA(value_data))
         {
@@ -679,11 +681,11 @@ void read_fonts_from_registry(HKEY hKey)
             lstrcpynA(full_path, value_data, MAX_PATH);
         }
 
-        // ファイルが存在しなければスキップ
+        // Skip if the file does not exist
         if (!PathFileExistsA(full_path))
             continue;
 
-        // FreeTypeで全フェイスを読み込む（load_fontの-1と同じロジック）
+        // Load all faces with FreeType (same logic as load_font with -1)
         load_font(full_path, -1);
     }
 }
@@ -793,7 +795,7 @@ FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int 
 
     if (best) return best;
 
-    // style_flagsが一致しなければ名前だけで再検索
+    // If style_flags do not match, search again by name only
     for (std::vector<FontInfo*>::iterator it = registered_fonts.begin();
          it != registered_fonts.end(); ++it)
     {
@@ -814,16 +816,16 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
 
     int bkMode = GetBkMode(hdc);
 
-    // 共通の作業用DCとビットマップを作成
+    // Create a working DC and bitmap
     HDC hdcSrc = CreateCompatibleDC(hdc);
     HBITMAP hbmSrc = CreateCompatibleBitmap(hdc, w, h);
     HGDIOBJ hbmSrcOld = SelectObject(hdcSrc, hbmSrc);
 
     if (bitmap->pixel_mode == FT_PIXEL_MODE_MONO)
     {
-        // --- モノクロ(1bpp)処理 ---
-        // (省略: 既存の MaskBlt を使用した実装で問題ありません)
-        // ただし、OPAQUEの場合は背景を塗りつぶす処理が必要です。
+        // --- Monochrome (1bpp) processing ---
+        // (omitted: existing MaskBlt-based implementation is fine)
+        // However, when OPAQUE, background fill processing is required.
         if (bkMode == OPAQUE) {
             HBRUSH hbrBg = CreateSolidBrush(bg_color);
             RECT rc = {0, 0, w, h};
@@ -840,8 +842,8 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
         }
 
         int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
-        int row_bytes = (w + 7) / 8; // DIB 1bpp の行バイト数は DWORD 境界にアライン
-        int dib_stride = (row_bytes + 3) & ~3; // DWORD アライン
+        int row_bytes = (w + 7) / 8; // DIB 1bpp row bytes are DWORD-aligned
+        int dib_stride = (row_bytes + 3) & ~3; // DWORD align
 
         std::vector<BYTE> packed(dib_stride * h, 0);
         for (int r = 0; r < h; ++r)
@@ -849,51 +851,51 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                    bitmap->buffer + r * src_pitch,
                    row_bytes);
 
-        // biHeight を負にしてトップダウン DIB として渡す
+        // Pass as top-down DIB by setting biHeight negative
         BITMAPINFO bmiMono = {};
         bmiMono.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
         bmiMono.bmiHeader.biWidth       = w;
-        bmiMono.bmiHeader.biHeight      = -h; // トップダウン
+        bmiMono.bmiHeader.biHeight      = -h; // top-down
         bmiMono.bmiHeader.biPlanes      = 1;
         bmiMono.bmiHeader.biBitCount    = 1;
         bmiMono.bmiHeader.biCompression = BI_RGB;
-        // 1bpp DIB のカラーテーブル: index 0 = 黒(背景)、index 1 = 白(前景)
+        // 1bpp DIB color table: index 0 = black (background), index 1 = white (foreground)
         bmiMono.bmiColors[0] = { 0,   0,   0, 0 };
-        // bmiColors[1] は BITMAPINFO のデフォルト構造に含まれないため別途確保
+        // bmiColors[1] is not included in the default BITMAPINFO structure, so allocate separately
         struct { BITMAPINFOHEADER bih; RGBQUAD colors[2]; } bmiMono2 = {};
         bmiMono2.bih = bmiMono.bmiHeader;
-        bmiMono2.colors[0] = { 0,   0,   0, 0 }; // 黒
-        bmiMono2.colors[1] = { 255, 255, 255, 0 }; // 白
+        bmiMono2.colors[0] = { 0,   0,   0, 0 }; // black
+        bmiMono2.colors[1] = { 255, 255, 255, 0 }; // white
 
         SetDIBits(NULL, hbmMask_cache, 0, h, packed.data(),
                   reinterpret_cast<BITMAPINFO*>(&bmiMono2), DIB_RGB_COLORS);
 
-        // MaskBlt: マスク=1 → hdcSrc の前景色を転送、マスク=0 → 転送先を保持
+        // MaskBlt: mask=1 -> transfer foreground color from hdcSrc; mask=0 -> keep destination
         MaskBlt(hdc, left, top, w, h,
                 hdcSrc, 0, 0,
                 hbmMask_cache, 0, 0,
                 MAKEROP4(SRCCOPY, 0x00AA0029 /* DST */));
 
-        // hbmMask_cache は再利用するため DeleteObject しない
+        // Do not DeleteObject hbmMask_cache as it is reused
     }
     else
     {
-        // --- グレースケール(8bpp)処理 ---
+        // --- Grayscale (8bpp) processing ---
         
-        // 1. 描画先の現在のピクセルを取得する (TRANSPARENT用)
-        // BitBltで現在のhdcからhdcSrcへ下地をコピー
+        // 1. Get current pixels at the destination (for TRANSPARENT mode)
+        // Copy the background from hdc to hdcSrc via BitBlt
         BitBlt(hdcSrc, 0, 0, w, h, hdc, left, top, SRCCOPY);
 
         std::vector<DWORD> pixels(w * h);
         BITMAPINFO bmi = {0};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = w;
-        bmi.bmiHeader.biHeight = -h; // トップダウン
+        bmi.bmiHeader.biHeight = -h; // top-down
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
 
-        // 現在の下地ピクセルを配列に取得
+        // Retrieve current background pixels into array
         GetDIBits(hdcSrc, hbmSrc, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
 
         int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
@@ -905,18 +907,18 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                 unsigned char alpha = bitmap->buffer[row * src_pitch + col];
                 if (alpha == 0) continue;
 
-                // 2. ブレンド対象の背景色を決定
+                // 2. Determine the background color to blend against
                 COLORREF target_bg;
                 if (bkMode == TRANSPARENT) {
-                    // 背景透過：現在の描画先のピクセル(BGR)を使用
+                    // Transparent background: use current pixel at the destination (BGR)
                     DWORD pixel = pixels[row * w + col];
                     target_bg = RGB(GetBValue(pixel), GetGValue(pixel), GetRValue(pixel));
                 } else {
-                    // 背景不透明：GetBkColorを使用
+                    // Opaque background: use GetBkColor
                     target_bg = bg_color;
                 }
 
-                // 3. アルファブレンド計算
+                // 3. Alpha blend calculation
                 int r = (GetRValue(fg_color) * alpha + GetRValue(target_bg) * (255 - alpha)) / 255;
                 int g = (GetGValue(fg_color) * alpha + GetGValue(target_bg) * (255 - alpha)) / 255;
                 int b = (GetBValue(fg_color) * alpha + GetBValue(target_bg) * (255 - alpha)) / 255;
@@ -925,7 +927,7 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
             }
         }
 
-        // 4. 合成したピクセルを書き戻し
+        // 4. Write back the composited pixels
         SetDIBits(hdcSrc, hbmSrc, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
         BitBlt(hdc, left, top, w, h, hdcSrc, 0, 0, SRCCOPY);
     }
@@ -1014,13 +1016,13 @@ void EmulatedExtTextOutW(
 
     if (is_raster)
     {
-        // ラスタフォントはキャッシュを経由せず直接オープン
+        // Raster fonts are opened directly without going through the cache
         if (FT_New_Face(library, font_info->path.c_str(),
                         font_info->face_index, &face) != 0)
             return;
         face_needs_done = true;
 
-        // 要求サイズに最も近い固定サイズを選択
+        // Select the fixed size closest to the requested size
         int target_h;
         if (lfHeight < 0)
             target_h = font_info->raster_height;
@@ -1037,7 +1039,7 @@ void EmulatedExtTextOutW(
         }
         FT_Select_Size(face, best_idx);
 
-        // FT_Select_Size の直後に追加
+        // Added immediately after FT_Select_Size
         bool has_fnt_header = (FT_Get_WinFNT_Header(face, &WinFNT) == 0);
         printf("first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
             WinFNT.first_char, WinFNT.last_char, WinFNT.default_char);
@@ -1046,7 +1048,7 @@ void EmulatedExtTextOutW(
     }
     else
     {
-        // アウトラインフォントは従来通りキャッシュ経由
+        // Outline fonts go through the cache as before
         FTC_ScalerRec scaler;
         scaler.face_id = static_cast<FTC_FaceID>(font_info);
         scaler.width   = 0;
@@ -1074,8 +1076,8 @@ void EmulatedExtTextOutW(
     FT_Int32 load_flags;
     if (is_raster)
     {
-        // ラスタフォントは必ずモノクロビットマップで取得する
-        // FT_LOAD_NO_SCALEは固定サイズそのものを使う指示
+        // Raster fonts always retrieve a monochrome bitmap.
+        // FT_LOAD_NO_SCALE instructs FreeType to use the fixed size as-is.
         load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING;
     }
     else
@@ -1085,8 +1087,8 @@ void EmulatedExtTextOutW(
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
     FT_Pos current_pen_y = (FT_Pos)baseline_y << 6;
-    FT_UInt previous_glyph = 0; // 前のグリフ番号を保持
-    bool has_kerning = FT_HAS_KERNING(face); // フォントがカーニング情報を持っているか
+    FT_UInt previous_glyph = 0; // Holds the previous glyph index
+    bool has_kerning = FT_HAS_KERNING(face); // Whether the font has kerning information
 
     const WCHAR* pch = lpString;
     for (INT i = 0; i < Count; ++i)
@@ -1106,7 +1108,7 @@ void EmulatedExtTextOutW(
         FT_UInt glyph_index;
         if (is_raster)
         {
-            // UnicodeコードポイントをFONのコードページに変換
+            // Convert Unicode codepoint to the FON codepage
             WCHAR wc = static_cast<WCHAR>(codepoint);
             char mb[4] = {};
             UINT codepage = 1252;
@@ -1124,7 +1126,7 @@ void EmulatedExtTextOutW(
 
             if (byte_val < WinFNT.first_char || byte_val > WinFNT.last_char)
             {
-                // 範囲外は default_char を使う
+                // Out of range: use default_char
                 glyph_index = WinFNT.default_char - WinFNT.first_char;
             }
             else
@@ -1150,7 +1152,7 @@ void EmulatedExtTextOutW(
         if (FT_Load_Glyph(face, glyph_index, load_flags) != 0)
             continue;
 
-        // cmapの確認
+        // Verify cmap
         printf("num_charmaps=%d\n", face->num_charmaps);
         for (int ci = 0; ci < face->num_charmaps; ++ci)
         {
