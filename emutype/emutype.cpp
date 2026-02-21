@@ -942,14 +942,67 @@ void EmulatedExtTextOutW(
     UINT fuOptions,
     CONST RECT *lprc,
     const WCHAR* lpString,
-    INT cchCount,
+    INT Count,
     CONST INT *lpDx,
     FontInfo* font_info,
     LONG lfHeight,
     XFORM* pxform)
 {
+    POINT Start, CurPos;
+    LONGLONG RealXStart64, RealYStart64;
+
+    if (lprc && !(fuOptions & (ETO_CLIPPED|ETO_OPAQUE)))
+    {
+        lprc = NULL; // No flags, no rectangle.
+    }
+    else if (!lprc) // No rectangle, force clear flags if set and continue.
+    {
+        fuOptions &= ~(ETO_CLIPPED|ETO_OPAQUE);
+    }
+
+    if (Count > 0xFFFF || (Count > 0 && lpString == NULL))
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    Start.x = X;
+    Start.y = Y;
+
+    LPtoDP(hdc, &Start, 1);
+
+    RealXStart64 = ((LONGLONG)Start.x) << 6;
+    RealYStart64 = ((LONGLONG)Start.y) << 6;
+
+    RECT MaskRect;
+    MaskRect.left = 0;
+    MaskRect.top = 0;
+
+    XFORM mxWorldToDevice;
+    GetWorldTransform(hdc, &mxWorldToDevice);
+
+    if (lprc && (fuOptions & (ETO_CLIPPED | ETO_OPAQUE)))
+    {
+        LPtoDP(hdc, (POINT*)lprc, 2);
+    }
+
     COLORREF fg_color = GetTextColor(hdc);
     COLORREF bg_color = GetBkColor(hdc);
+
+    if (lprc && (fuOptions & ETO_OPAQUE))
+    {
+        HBRUSH hbr = CreateSolidBrush(bg_color);
+        FillRect(hdc, lprc, hbr);
+        DeleteObject(hbr);
+        fuOptions &= ~ETO_OPAQUE;
+    }
+    else
+    {
+        if (GetBkMode(hdc) == OPAQUE)
+        {
+            fuOptions |= ETO_OPAQUE;
+        }
+    }
 
     bool is_raster = is_raster_font(font_info->path);
     FT_Face face = NULL;
@@ -1036,11 +1089,11 @@ void EmulatedExtTextOutW(
     bool has_kerning = FT_HAS_KERNING(face); // フォントがカーニング情報を持っているか
 
     const WCHAR* pch = lpString;
-    for (INT i = 0; i < cchCount; ++i)
+    for (INT i = 0; i < Count; ++i)
     {
         unsigned long codepoint = 0;
         WCHAR w1 = pch[i];
-        if (IS_HIGH_SURROGATE(w1) && i + 1 < cchCount) {
+        if (IS_HIGH_SURROGATE(w1) && i + 1 < Count) {
             WCHAR w2 = pch[i + 1];
             if (IS_LOW_SURROGATE(w2)) {
                 codepoint = MAKE_SURROGATE_PAIR(w1, w2);
