@@ -803,33 +803,25 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
     if (w <= 0 || h <= 0)
         return;
 
-    // --- 共通: 前景色で塗りつぶした転送元ビットマップを作成 ---
+    int bkMode = GetBkMode(hdc);
+
+    // 共通の作業用DCとビットマップを作成
     HDC hdcSrc = CreateCompatibleDC(hdc);
     HBITMAP hbmSrc = CreateCompatibleBitmap(hdc, w, h);
     HGDIOBJ hbmSrcOld = SelectObject(hdcSrc, hbmSrc);
-    HBRUSH hbrFg = CreateSolidBrush(fg_color);
-    RECT rcFill = { 0, 0, w, h };
-    FillRect(hdcSrc, &rcFill, hbrFg);
-    DeleteObject(hbrFg);
 
     if (bitmap->pixel_mode == FT_PIXEL_MODE_MONO)
     {
-        // -----------------------------------------------------------------
-        // モノクロ (1bpp packed): MaskBlt をそのまま使う
-        //
-        // MaskBlt のマスクは「1 = 転送元を使う、0 = 転送先をそのまま残す」。
-        // FreeType の MONO ビットマップは「1 = 前景、0 = 背景」なので
-        // そのままマスクとして渡せる。
-        //
-        // raster op: SRCCOPY (0xCC) をマスクビット=1 の箇所に、
-        //            転送先をそのまま (0xAA = DST) をマスクビット=0 の箇所に。
-        //   → dwRop = MAKEROP4(SRCCOPY, 0x00AA0029)  ※ 0x00AA0029 = DST
-        // -----------------------------------------------------------------
+        // --- モノクロ(1bpp)処理 ---
+        // (省略: 既存の MaskBlt を使用した実装で問題ありません)
+        // ただし、OPAQUEの場合は背景を塗りつぶす処理が必要です。
+        if (bkMode == OPAQUE) {
+            HBRUSH hbrBg = CreateSolidBrush(bg_color);
+            RECT rc = {0, 0, w, h};
+            FillRect(hdc, &rc, hbrBg);
+            DeleteObject(hbrBg);
+        }
 
-        // FreeType の MONO ビットマップを HBITMAP へ変換する。
-        // SetBitmapBits はボトムアップ順で格納するため、FreeType のトップダウン
-        // バッファと行順が逆転してしまう。SetDIBits + biHeight 負値（トップダウン）
-        // を使うことで行順を正しく渡す。
         if (w > hbmMask_cache_w || h > hbmMask_cache_h)
         {
             if (hbmMask_cache) { DeleteObject(hbmMask_cache); hbmMask_cache = NULL; }
@@ -877,101 +869,56 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
     }
     else
     {
-        // -----------------------------------------------------------------
-        // グレースケール (8bpp): MaskBlt は 2値マスクしか扱えないため、
-        // アルファ値に応じて前景色と背景色をブレンドしたピクセルを
-        // 転送元ビットマップに直接書き込み、完全黒ピクセル (alpha==0) を
-        // 除外するマスクを作って MaskBlt で合成する。
-        //
-        // 手順:
-        //   1. hdcSrc に前景・背景のブレンド結果を書き込む。
-        //   2. alpha==0 のピクセルを 0(黒)、それ以外を 1(白) とする
-        //      1bpp モノクロマスクを作成する。
-        //   3. MaskBlt でマスク=1 の箇所だけ hdcSrc から転送する。
-        // -----------------------------------------------------------------
-
-        int row_bytes_mask = (w + 7) / 8;
-        std::vector<BYTE> maskBits(row_bytes_mask * h, 0);
-
-        // BITMAPINFO を構築して転送元ビットマップへ直接書き込む (SetDIBits)
-        struct {
-            BITMAPINFOHEADER bmiHeader;
-            RGBQUAD          bmiColors[1];
-        } bmi = {};
-        bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth       = w;
-        bmi.bmiHeader.biHeight      = -h; // トップダウン
-        bmi.bmiHeader.biPlanes      = 1;
-        bmi.bmiHeader.biBitCount    = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
+        // --- グレースケール(8bpp)処理 ---
+        
+        // 1. 描画先の現在のピクセルを取得する (TRANSPARENT用)
+        // BitBltで現在のhdcからhdcSrcへ下地をコピー
+        BitBlt(hdcSrc, 0, 0, w, h, hdc, left, top, SRCCOPY);
 
         std::vector<DWORD> pixels(w * h);
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = w;
+        bmi.bmiHeader.biHeight = -h; // トップダウン
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        // 現在の下地ピクセルを配列に取得
+        GetDIBits(hdcSrc, hbmSrc, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
 
         int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
+        
         for (int row = 0; row < h; ++row)
         {
             for (int col = 0; col < w; ++col)
             {
                 unsigned char alpha = bitmap->buffer[row * src_pitch + col];
+                if (alpha == 0) continue;
 
-                if (alpha == 0)
-                {
-                    // 転送しない → マスクビット=0 (黒)、ピクセル値は不問
-                    pixels[row * w + col] = 0;
+                // 2. ブレンド対象の背景色を決定
+                COLORREF target_bg;
+                if (bkMode == TRANSPARENT) {
+                    // 背景透過：現在の描画先のピクセル(BGR)を使用
+                    DWORD pixel = pixels[row * w + col];
+                    target_bg = RGB(GetBValue(pixel), GetGValue(pixel), GetRValue(pixel));
+                } else {
+                    // 背景不透明：GetBkColorを使用
+                    target_bg = bg_color;
                 }
-                else
-                {
-                    // 前景色と背景色をアルファブレンド
-                    int r = (GetRValue(fg_color) * alpha + GetRValue(bg_color) * (255 - alpha)) / 255;
-                    int g = (GetGValue(fg_color) * alpha + GetGValue(bg_color) * (255 - alpha)) / 255;
-                    int b = (GetBValue(fg_color) * alpha + GetBValue(bg_color) * (255 - alpha)) / 255;
-                    pixels[row * w + col] = RGB(r, g, b); // COLORREF = 0x00BBGGRR
 
-                    // マスクビット=1 (白) → このピクセルを転送する
-                    maskBits[row * row_bytes_mask + col / 8] |=
-                        static_cast<BYTE>(0x80 >> (col % 8));
-                }
+                // 3. アルファブレンド計算
+                int r = (GetRValue(fg_color) * alpha + GetRValue(target_bg) * (255 - alpha)) / 255;
+                int g = (GetGValue(fg_color) * alpha + GetGValue(target_bg) * (255 - alpha)) / 255;
+                int b = (GetBValue(fg_color) * alpha + GetBValue(target_bg) * (255 - alpha)) / 255;
+                
+                pixels[row * w + col] = RGB(r, g, b);
             }
         }
 
-        SetDIBits(hdcSrc, hbmSrc, 0, h,
-                  pixels.data(),
-                  reinterpret_cast<BITMAPINFO*>(&bmi),
-                  DIB_RGB_COLORS);
-
-        if (w > hbmMask_cache_w || h > hbmMask_cache_h)
-        {
-            if (hbmMask_cache) { DeleteObject(hbmMask_cache); hbmMask_cache = NULL; }
-            hbmMask_cache = CreateBitmap(w, h, 1, 1, NULL);
-            hbmMask_cache_w = w;
-            hbmMask_cache_h = h;
-        }
-
-        {
-            int dib_stride_mask = ((w + 7) / 8 + 3) & ~3;
-            std::vector<BYTE> packed_mask(dib_stride_mask * h, 0);
-            int src_stride_mask = (w + 7) / 8;
-            for (int r = 0; r < h; ++r)
-                memcpy(&packed_mask[r * dib_stride_mask], &maskBits[r * src_stride_mask], src_stride_mask);
-            struct { BITMAPINFOHEADER bih; RGBQUAD colors[2]; } bmiGrayMask = {};
-            bmiGrayMask.bih.biSize        = sizeof(BITMAPINFOHEADER);
-            bmiGrayMask.bih.biWidth       = w;
-            bmiGrayMask.bih.biHeight      = -h;
-            bmiGrayMask.bih.biPlanes      = 1;
-            bmiGrayMask.bih.biBitCount    = 1;
-            bmiGrayMask.bih.biCompression = BI_RGB;
-            bmiGrayMask.colors[0] = { 0,   0,   0, 0 };
-            bmiGrayMask.colors[1] = { 255, 255, 255, 0 };
-            SetDIBits(NULL, hbmMask_cache, 0, h, packed_mask.data(),
-                      reinterpret_cast<BITMAPINFO*>(&bmiGrayMask), DIB_RGB_COLORS);
-        }
-
-        MaskBlt(hdc, left, top, w, h,
-                hdcSrc, 0, 0,
-                hbmMask_cache, 0, 0,
-                MAKEROP4(SRCCOPY, 0x00AA0029 /* DST */));
-
-        // hbmMask_cache は再利用するため DeleteObject しない
+        // 4. 合成したピクセルを書き戻し
+        SetDIBits(hdcSrc, hbmSrc, 0, h, pixels.data(), &bmi, DIB_RGB_COLORS);
+        BitBlt(hdc, left, top, w, h, hdcSrc, 0, 0, SRCCOPY);
     }
 
     SelectObject(hdcSrc, hbmSrcOld);
@@ -1174,7 +1121,7 @@ const int WIDTH  = 300;
 const int HEIGHT = 300;
 const COLORREF BG = RGB(255, 255, 0);
 const COLORREF FG = RGB(0,   0,   0);
-const char* FONT_NAME = "MS Sans Serif";
+const char* FONT_NAME = "Courier New";
 const LONG FONT_SIZE = -20;
 const WCHAR* text = L"FreeType Draw";
 

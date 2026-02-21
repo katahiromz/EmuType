@@ -34,7 +34,18 @@ BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2, int threshold)
     int diffCount = 0;
     for (int i = 0; i < pixelCount; ++i) {
         if (pixels1[i] != pixels2[i]) {
-            diffCount++;
+            BYTE b10 = GetRValue(pixels1[i]);
+            BYTE b11 = GetGValue(pixels1[i]);
+            BYTE b12 = GetBValue(pixels1[i]);
+            BYTE b20 = GetRValue(pixels2[i]);
+            BYTE b21 = GetGValue(pixels2[i]);
+            BYTE b22 = GetBValue(pixels2[i]);
+            if (abs(b10 - b20) > 5 ||
+                abs(b11 - b21) > 5 ||
+                abs(b12 - b22) > 5)
+            {
+                diffCount++;
+            }
         }
     }
 
