@@ -1159,6 +1159,7 @@ BOOL EmulatedExtTextOutW(
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
     FT_Pos current_pen_y = (FT_Pos)baseline_y << 6;
+    int lpDx_accumulated = 0;
     FT_UInt previous_glyph = 0; // Holds the previous glyph index
     bool has_kerning = FT_HAS_KERNING(face); // Whether the font has kerning information
 
@@ -1252,7 +1253,12 @@ BOOL EmulatedExtTextOutW(
             slot->advance.x, slot->advance.x >> 6,
             slot->bitmap_left, slot->bitmap_top);
 
-        current_pen_x += slot->advance.x;
+        if (lpDx) {
+            lpDx_accumulated += lpDx[i];
+            current_pen_x = ((FT_Pos)X << 6) + ((FT_Pos)lpDx_accumulated << 6);
+        } else {
+            current_pen_x += slot->advance.x;
+        }
         previous_glyph = glyph_index;
     }
 
