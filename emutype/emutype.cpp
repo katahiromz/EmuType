@@ -91,9 +91,6 @@ struct FontInfo {
     std::string family_name; // UTF-8
     std::string english_name; // UTF-8
     FT_Long style_flags; // See FT_Face.style_flags
-    FT_Long em_ascender;
-    FT_Long em_descender;
-    FT_Long em_units;
     BYTE charset;
     INT raster_height;
     INT raster_internal_leading;
@@ -124,14 +121,229 @@ bool is_supported_font(const char *filename) {
            lstrcmpiA(pchDotExt, ".fnt") == 0;
 }
 
-int calc_pixel_size_from_cell_height(FontInfo* font_info, int cell_height_px)
+// ---------------------------------------------------------------------------
+// VDMX (Vertical Device Metrics) table support
+// Mirrors Wine's load_VDMX() in dlls/win32u/freetype.c
+// ---------------------------------------------------------------------------
+
+#pragma pack(push, 1)
+struct VDMX_Header {
+    WORD version;
+    WORD numRecs;
+    WORD numRatios;
+};
+struct VDMX_Ratio {
+    BYTE bCharSet;
+    BYTE xRatio;
+    BYTE yStartRatio;
+    BYTE yEndRatio;
+};
+struct VDMX_Group {
+    WORD recs;
+    BYTE startsz;
+    BYTE endsz;
+};
+struct VDMX_vTable {
+    WORD yPelHeight;
+    WORD yMax;        // signed SHORT stored as WORD (big-endian)
+    WORD yMin;        // signed SHORT stored as WORD (big-endian)
+};
+#pragma pack(pop)
+
+static inline WORD be16(WORD x) {
+    return (WORD)(((x & 0xFF) << 8) | ((x >> 8) & 0xFF));
+}
+
+// Result of a successful VDMX lookup
+struct VdmxEntry {
+    int  ppem;
+    int  yMax;   // pixel ascent  (positive, from baseline upward)
+    int  yMin;   // pixel descent (negative, from baseline downward)
+};
+
+// Load and search the VDMX table embedded in an SFNT font.
+// lfHeight > 0 : search for the entry where yMax + (-yMin) == lfHeight
+//                (Windows "cell height" semantics)
+// lfHeight < 0 : search for the entry where yPelHeight == |lfHeight|
+//                (Windows "em height" / ppem semantics)
+// Returns true and fills *out on success.
+static bool load_VDMX(FT_Face face, int lfHeight, VdmxEntry* out)
 {
-    FT_Long em_ascender  = font_info->em_ascender;
-    FT_Long em_descender = font_info->em_descender;
-    FT_Long em_units     = font_info->em_units;
-    FT_Long em_cell = em_ascender - em_descender;
-    int pixel_size = static_cast<int>(static_cast<double>(cell_height_px) * em_units / em_cell + 0.5);
-    return pixel_size;
+    if (!FT_IS_SFNT(face)) return false;
+
+    const FT_ULong VDMX_TAG = FT_MAKE_TAG('V','D','M','X');
+
+    // Query table size
+    FT_ULong len = 0;
+    if (FT_Load_Sfnt_Table(face, VDMX_TAG, 0, NULL, &len) != 0 || len == 0)
+        return false;
+
+    std::vector<BYTE> buf(len);
+    if (FT_Load_Sfnt_Table(face, VDMX_TAG, 0, buf.data(), &len) != 0)
+        return false;
+
+    if (len < sizeof(VDMX_Header)) return false;
+
+    const BYTE* p = buf.data();
+    VDMX_Header hdr;
+    memcpy(&hdr, p, sizeof(hdr));
+    WORD numRatios = be16(hdr.numRatios);
+    WORD numRecs   = be16(hdr.numRecs);
+
+    // Find a matching ratio record.
+    // We use device ratio 1:1 (same as Wine's fixed devXRatio/devYRatio = 1).
+    // A record is acceptable when:
+    //   (xRatio == 0 && yStartRatio == 0 && yEndRatio == 0)  [catch-all]
+    //   OR (xRatio == 1 && yStartRatio <= 1 <= yEndRatio)
+    FT_ULong group_offset_file = (FT_ULong)-1;
+    const FT_ULong ratios_base = sizeof(VDMX_Header);
+    const FT_ULong offsets_base = ratios_base + (FT_ULong)numRatios * sizeof(VDMX_Ratio);
+
+    for (WORD i = 0; i < numRatios; ++i)
+    {
+        FT_ULong roff = ratios_base + (FT_ULong)i * sizeof(VDMX_Ratio);
+        if (roff + sizeof(VDMX_Ratio) > len) break;
+
+        VDMX_Ratio ratio;
+        memcpy(&ratio, p + roff, sizeof(ratio));
+
+        if (!ratio.bCharSet) continue;   // skip records with bCharSet == 0
+
+        bool match = (ratio.xRatio == 0 && ratio.yStartRatio == 0 && ratio.yEndRatio == 0)
+                  || (ratio.xRatio == 1 && ratio.yStartRatio <= 1 && 1 <= ratio.yEndRatio);
+        if (!match) continue;
+
+        FT_ULong ooff = offsets_base + (FT_ULong)i * sizeof(WORD);
+        if (ooff + sizeof(WORD) > len) break;
+
+        WORD go;
+        memcpy(&go, p + ooff, sizeof(go));
+        group_offset_file = be16(go);
+        break;
+    }
+
+    if (group_offset_file == (FT_ULong)-1 || group_offset_file + sizeof(VDMX_Group) > len)
+        return false;
+
+    VDMX_Group group;
+    memcpy(&group, p + group_offset_file, sizeof(group));
+    WORD recs    = be16(group.recs);
+    BYTE startsz = group.startsz;
+    BYTE endsz   = group.endsz;
+
+    FT_ULong vtable_off = group_offset_file + sizeof(VDMX_Group);
+    if (vtable_off + (FT_ULong)recs * sizeof(VDMX_vTable) > len)
+        return false;
+
+    const VDMX_vTable* vt = reinterpret_cast<const VDMX_vTable*>(p + vtable_off);
+
+    if (lfHeight > 0)
+    {
+        // Cell-height mode: find entry where yMax + (-yMin) == lfHeight.
+        // Iterate in ascending ppem order; if we overshoot use the previous.
+        int prev_ppem = 0, prev_yMax = 0, prev_yMin = 0;
+        for (WORD i = 0; i < recs; ++i)
+        {
+            int ppem = (int)be16(vt[i].yPelHeight);
+            int yMax = (int)(SHORT)be16(vt[i].yMax);
+            int yMin = (int)(SHORT)be16(vt[i].yMin);
+            int cell = yMax + (-yMin);
+
+            if (cell == lfHeight)
+            {
+                out->ppem = ppem;
+                out->yMax = yMax;
+                out->yMin = yMin;
+                return true;
+            }
+            if (cell > lfHeight)
+            {
+                // Overshot ? use the previous smaller entry if it exists
+                if (prev_ppem == 0) return false;
+                out->ppem = prev_ppem;
+                out->yMax = prev_yMax;
+                out->yMin = prev_yMin;
+                return true;
+            }
+            prev_ppem = ppem;
+            prev_yMax = yMax;
+            prev_yMin = yMin;
+        }
+        return false;   // no entry found within range
+    }
+    else
+    {
+        // Em-height / ppem mode: |lfHeight| must be in [startsz, endsz]
+        int target = -lfHeight;
+        if (target < startsz || target > endsz) return false;
+
+        for (WORD i = 0; i < recs; ++i)
+        {
+            int ppem = (int)be16(vt[i].yPelHeight);
+            if (ppem > target) return false;   // past our target
+            if (ppem == target)
+            {
+                out->ppem = ppem;
+                out->yMax = (int)(SHORT)be16(vt[i].yMax);
+                out->yMin = (int)(SHORT)be16(vt[i].yMin);
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// calc_ppem_for_height  (Wine-compatible)
+//
+// Converts a LOGFONT lfHeight value to a FreeType ppem value.
+//
+//   lfHeight > 0  Å® cell height  Å®  ppem = units_per_EM * lfHeight / (winAscent+winDescent)
+//   lfHeight < 0  Å® em   height  Å®  ppem = |lfHeight|
+//   lfHeight == 0 Å® default 16px em
+//
+// Uses usWinAscent/usWinDescent from OS/2 table exactly as Windows does.
+// Falls back to hhea Ascender/Descender when the OS/2 values sum to zero.
+// ---------------------------------------------------------------------------
+static int calc_ppem_for_height(FT_Face face, int lfHeight)
+{
+    if (lfHeight == 0) lfHeight = -16;   // Windows default
+
+    if (lfHeight < 0)
+        return -lfHeight;   // em-height: ppem == |lfHeight|
+
+    // Cell-height path: derive ppem from usWinAscent + usWinDescent
+    TT_OS2*        pOS2  = (TT_OS2*)       FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+    TT_HoriHeader* pHori = (TT_HoriHeader*)FT_Get_Sfnt_Table(face, FT_SFNT_HHEA);
+
+    int units;
+    if (pOS2)
+    {
+        // Some broken fonts store a huge negative value in usWinDescent
+        // (signed overflow). Take the absolute value to compensate.
+        int winAscent  = (int)pOS2->usWinAscent;
+        int winDescent = (int)abs((SHORT)pOS2->usWinDescent);
+
+        if (winAscent + winDescent != 0)
+            units = winAscent + winDescent;
+        else if (pHori)
+            units = (int)pHori->Ascender - (int)pHori->Descender;
+        else
+            units = (int)face->units_per_EM;
+    }
+    else if (pHori)
+        units = (int)pHori->Ascender - (int)pHori->Descender;
+    else
+        units = (int)face->units_per_EM;
+
+    // ppem = units_per_EM * lfHeight / units
+    int ppem = (int)FT_MulDiv((FT_Long)face->units_per_EM, (FT_Long)lfHeight, (FT_Long)units);
+
+    // If rounding caused us to exceed the requested height, step down by one
+    if (ppem > 1 && (int)FT_MulDiv((FT_Long)units, (FT_Long)ppem, (FT_Long)face->units_per_EM) > lfHeight)
+        --ppem;
+
+    return (ppem > 0) ? ppem : 1;
 }
 
 FT_Error
@@ -486,9 +698,6 @@ bool load_font(const char *path, int face_index)
                 info->family_name = get_family_name(face, true);
                 info->english_name = get_family_name(face, false);
                 info->style_flags = face->style_flags;
-                info->em_ascender  = face->ascender;
-                info->em_descender = face->descender;
-                info->em_units = face->units_per_EM;
                 info->charset = cs;
                 info->raster_height = raster_height;
                 info->raster_internal_leading = raster_internal_leading;
@@ -501,9 +710,6 @@ bool load_font(const char *path, int face_index)
             info->family_name = get_family_name(face, true);
             info->english_name = get_family_name(face, false);
             info->style_flags = face->style_flags;
-            info->em_ascender  = face->ascender;
-            info->em_descender = face->descender;
-            info->em_units = face->units_per_EM;
             info->charset = cs;
             info->raster_height = raster_height;
             info->raster_internal_leading = raster_internal_leading;
@@ -1157,31 +1363,63 @@ BOOL EmulatedExtTextOutW(
     }
     else
     {
-        // Outline fonts go through the cache as before
+        // Outline fonts: compute ppem with VDMX then Wine-compatible fallback.
+        // Step 1 - open a temporary face to read font tables (calc_ppem_for_height
+        //          and load_VDMX need the raw FT_Face, not the cached FT_Size).
+        FT_Face tmp_face = NULL;
+        if (FT_New_Face(library, font_info->path.c_str(),
+                        font_info->face_index, &tmp_face) != 0)
+            return FALSE;
+
+        // Step 2 - try VDMX first (exact Windows metrics for common sizes)
+        VdmxEntry vdmx = {};
+        bool have_vdmx = load_VDMX(tmp_face, lfHeight, &vdmx);
+
+        // Step 3 - compute ppem
+        int ppem;
+        if (have_vdmx)
+            ppem = vdmx.ppem;
+        else
+            ppem = calc_ppem_for_height(tmp_face, lfHeight);
+
+        FT_Done_Face(tmp_face);
+
+        // Step 4 - look up (or create) the sized face in the cache
         FTC_ScalerRec scaler;
         scaler.face_id = static_cast<FTC_FaceID>(font_info);
         scaler.width   = 0;
-
-        if (lfHeight > 0) {
-            scaler.height = calc_pixel_size_from_cell_height(font_info, lfHeight);
-        } else {
-            scaler.height = labs(lfHeight);
-        }
-
-        scaler.pixel = 1;
-        scaler.x_res = 96;
-        scaler.y_res = 96;
+        scaler.height  = ppem;
+        scaler.pixel   = 1;
+        scaler.x_res   = 96;
+        scaler.y_res   = 96;
 
         FT_Size ft_size;
         if (FTC_Manager_LookupSize(cache_manager, &scaler, &ft_size) != 0)
             return FALSE;
         face = ft_size->face;
 
-        TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
-        if (os2) {
-            pixel_ascent = (int)(os2->usWinAscent * face->size->metrics.y_scale / 65536.0 + 32) >> 6;
-        } else {
-            pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
+        // Step 5 - determine pixel ascent (= distance from top of cell to baseline)
+        if (have_vdmx)
+        {
+            // VDMX gives us exact integer pixel values - use them directly.
+            pixel_ascent = vdmx.yMax;
+        }
+        else
+        {
+            // No VDMX: scale usWinAscent with the em_scale we just computed.
+            // em_scale is a 16.16 fixed-point value: ppem / units_per_EM.
+            TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+            if (os2 && (os2->usWinAscent != 0 || os2->usWinDescent != 0))
+            {
+                FT_Fixed em_scale = FT_MulDiv(
+                    (FT_Long)ppem, 1 << 16,
+                    (FT_Long)face->units_per_EM);
+                pixel_ascent = (int)FT_MulFix((FT_Long)os2->usWinAscent, em_scale);
+            }
+            else
+            {
+                pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
+            }
         }
 
         baseline_y = Y + pixel_ascent;
