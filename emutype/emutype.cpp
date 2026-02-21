@@ -16,6 +16,7 @@
 #include FT_WINFONTS_H
 
 #include "SaveBitmapToFile.h"
+#include "nearly_equal_bitmap.h"
 
 #define MAKE_SURROGATE_PAIR(w1, w2) \
     (0x10000 + (((DWORD)(w1) - HIGH_SURROGATE_START) << 10) + ((DWORD)(w2) - LOW_SURROGATE_START));
@@ -89,12 +90,8 @@ char fonts_dir[MAX_PATH];
 FT_Library library;
 FTC_Manager cache_manager;
 
-const int WIDTH  = 300;
-const int HEIGHT = 300;
-const COLORREF BG = RGB(255, 255, 0);
-const COLORREF FG = RGB(0,   0,   0);
-const char* FONT_NAME = "MS Sans Serif";
-const LONG FONT_SIZE = -20;
+HBITMAP hbmMask_cache = NULL;
+int hbmMask_cache_w = 0, hbmMask_cache_h = 0;
 
 // フォントの種類を判定するヘルパー
 static bool is_raster_font(const std::string& path)
@@ -746,6 +743,7 @@ VOID FreeFontSupport(VOID)
     if (cache_manager)
         FTC_Manager_Done(cache_manager);
     FT_Done_FreeType(library);
+    DeleteObject(hbmMask_cache);
 }
 
 FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int preferred_height = 0, FT_Byte preferred_charset = ANSI_CHARSET)
@@ -797,52 +795,205 @@ FontInfo* find_font_by_name(const char* font_name, FT_Long style_flags = 0, int 
     return NULL;
 }
 
-void draw_glyph(HDC hDC, FT_Bitmap* bitmap, int left, int top,
+void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                 COLORREF fg_color, COLORREF bg_color)
 {
-    for (unsigned int row = 0; row < bitmap->rows; ++row)
+    int w = (int)bitmap->width;
+    int h = (int)bitmap->rows;
+    if (w <= 0 || h <= 0)
+        return;
+
+    // --- 共通: 前景色で塗りつぶした転送元ビットマップを作成 ---
+    HDC hdcSrc = CreateCompatibleDC(hdc);
+    HBITMAP hbmSrc = CreateCompatibleBitmap(hdc, w, h);
+    HGDIOBJ hbmSrcOld = SelectObject(hdcSrc, hbmSrc);
+    HBRUSH hbrFg = CreateSolidBrush(fg_color);
+    RECT rcFill = { 0, 0, w, h };
+    FillRect(hdcSrc, &rcFill, hbrFg);
+    DeleteObject(hbrFg);
+
+    if (bitmap->pixel_mode == FT_PIXEL_MODE_MONO)
     {
-        for (unsigned int col = 0; col < bitmap->width; ++col)
+        // -----------------------------------------------------------------
+        // モノクロ (1bpp packed): MaskBlt をそのまま使う
+        //
+        // MaskBlt のマスクは「1 = 転送元を使う、0 = 転送先をそのまま残す」。
+        // FreeType の MONO ビットマップは「1 = 前景、0 = 背景」なので
+        // そのままマスクとして渡せる。
+        //
+        // raster op: SRCCOPY (0xCC) をマスクビット=1 の箇所に、
+        //            転送先をそのまま (0xAA = DST) をマスクビット=0 の箇所に。
+        //   → dwRop = MAKEROP4(SRCCOPY, 0x00AA0029)  ※ 0x00AA0029 = DST
+        // -----------------------------------------------------------------
+
+        // FreeType の MONO ビットマップを HBITMAP へ変換する。
+        // SetBitmapBits はボトムアップ順で格納するため、FreeType のトップダウン
+        // バッファと行順が逆転してしまう。SetDIBits + biHeight 負値（トップダウン）
+        // を使うことで行順を正しく渡す。
+        if (w > hbmMask_cache_w || h > hbmMask_cache_h)
         {
-            unsigned char alpha;
-            if (bitmap->pixel_mode == FT_PIXEL_MODE_MONO)
-            {
-                // packed 1bpp: 1バイトに8ピクセル、MSBが左
-                unsigned char byte = bitmap->buffer[row * bitmap->pitch + col / 8];
-                alpha = (byte & (0x80 >> (col % 8))) ? 255 : 0;
-            }
-            else
-            {
-                // 8bpp グレースケール
-                alpha = bitmap->buffer[row * bitmap->pitch + col];
-            }
-
-            if (alpha == 0)
-                continue;
-
-            int r = (GetRValue(fg_color) * alpha + GetRValue(bg_color) * (255 - alpha)) / 255;
-            int g = (GetGValue(fg_color) * alpha + GetGValue(bg_color) * (255 - alpha)) / 255;
-            int b = (GetBValue(fg_color) * alpha + GetBValue(bg_color) * (255 - alpha)) / 255;
-            SetPixel(hDC, left + col, top + row, RGB(r, g, b));
+            if (hbmMask_cache) { DeleteObject(hbmMask_cache); hbmMask_cache = NULL; }
+            hbmMask_cache = CreateBitmap(w, h, 1, 1, NULL);
+            hbmMask_cache_w = w;
+            hbmMask_cache_h = h;
         }
+
+        int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
+        int row_bytes = (w + 7) / 8; // DIB 1bpp の行バイト数は DWORD 境界にアライン
+        int dib_stride = (row_bytes + 3) & ~3; // DWORD アライン
+
+        std::vector<BYTE> packed(dib_stride * h, 0);
+        for (int r = 0; r < h; ++r)
+            memcpy(&packed[r * dib_stride],
+                   bitmap->buffer + r * src_pitch,
+                   row_bytes);
+
+        // biHeight を負にしてトップダウン DIB として渡す
+        BITMAPINFO bmiMono = {};
+        bmiMono.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+        bmiMono.bmiHeader.biWidth       = w;
+        bmiMono.bmiHeader.biHeight      = -h; // トップダウン
+        bmiMono.bmiHeader.biPlanes      = 1;
+        bmiMono.bmiHeader.biBitCount    = 1;
+        bmiMono.bmiHeader.biCompression = BI_RGB;
+        // 1bpp DIB のカラーテーブル: index 0 = 黒(背景)、index 1 = 白(前景)
+        bmiMono.bmiColors[0] = { 0,   0,   0, 0 };
+        // bmiColors[1] は BITMAPINFO のデフォルト構造に含まれないため別途確保
+        struct { BITMAPINFOHEADER bih; RGBQUAD colors[2]; } bmiMono2 = {};
+        bmiMono2.bih = bmiMono.bmiHeader;
+        bmiMono2.colors[0] = { 0,   0,   0, 0 }; // 黒
+        bmiMono2.colors[1] = { 255, 255, 255, 0 }; // 白
+
+        SetDIBits(NULL, hbmMask_cache, 0, h, packed.data(),
+                  reinterpret_cast<BITMAPINFO*>(&bmiMono2), DIB_RGB_COLORS);
+
+        // MaskBlt: マスク=1 → hdcSrc の前景色を転送、マスク=0 → 転送先を保持
+        MaskBlt(hdc, left, top, w, h,
+                hdcSrc, 0, 0,
+                hbmMask_cache, 0, 0,
+                MAKEROP4(SRCCOPY, 0x00AA0029 /* DST */));
+
+        // hbmMask_cache は再利用するため DeleteObject しない
     }
+    else
+    {
+        // -----------------------------------------------------------------
+        // グレースケール (8bpp): MaskBlt は 2値マスクしか扱えないため、
+        // アルファ値に応じて前景色と背景色をブレンドしたピクセルを
+        // 転送元ビットマップに直接書き込み、完全黒ピクセル (alpha==0) を
+        // 除外するマスクを作って MaskBlt で合成する。
+        //
+        // 手順:
+        //   1. hdcSrc に前景・背景のブレンド結果を書き込む。
+        //   2. alpha==0 のピクセルを 0(黒)、それ以外を 1(白) とする
+        //      1bpp モノクロマスクを作成する。
+        //   3. MaskBlt でマスク=1 の箇所だけ hdcSrc から転送する。
+        // -----------------------------------------------------------------
+
+        int row_bytes_mask = (w + 7) / 8;
+        std::vector<BYTE> maskBits(row_bytes_mask * h, 0);
+
+        // BITMAPINFO を構築して転送元ビットマップへ直接書き込む (SetDIBits)
+        struct {
+            BITMAPINFOHEADER bmiHeader;
+            RGBQUAD          bmiColors[1];
+        } bmi = {};
+        bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth       = w;
+        bmi.bmiHeader.biHeight      = -h; // トップダウン
+        bmi.bmiHeader.biPlanes      = 1;
+        bmi.bmiHeader.biBitCount    = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        std::vector<DWORD> pixels(w * h);
+
+        int src_pitch = (bitmap->pitch < 0) ? -bitmap->pitch : bitmap->pitch;
+        for (int row = 0; row < h; ++row)
+        {
+            for (int col = 0; col < w; ++col)
+            {
+                unsigned char alpha = bitmap->buffer[row * src_pitch + col];
+
+                if (alpha == 0)
+                {
+                    // 転送しない → マスクビット=0 (黒)、ピクセル値は不問
+                    pixels[row * w + col] = 0;
+                }
+                else
+                {
+                    // 前景色と背景色をアルファブレンド
+                    int r = (GetRValue(fg_color) * alpha + GetRValue(bg_color) * (255 - alpha)) / 255;
+                    int g = (GetGValue(fg_color) * alpha + GetGValue(bg_color) * (255 - alpha)) / 255;
+                    int b = (GetBValue(fg_color) * alpha + GetBValue(bg_color) * (255 - alpha)) / 255;
+                    pixels[row * w + col] = RGB(r, g, b); // COLORREF = 0x00BBGGRR
+
+                    // マスクビット=1 (白) → このピクセルを転送する
+                    maskBits[row * row_bytes_mask + col / 8] |=
+                        static_cast<BYTE>(0x80 >> (col % 8));
+                }
+            }
+        }
+
+        SetDIBits(hdcSrc, hbmSrc, 0, h,
+                  pixels.data(),
+                  reinterpret_cast<BITMAPINFO*>(&bmi),
+                  DIB_RGB_COLORS);
+
+        if (w > hbmMask_cache_w || h > hbmMask_cache_h)
+        {
+            if (hbmMask_cache) { DeleteObject(hbmMask_cache); hbmMask_cache = NULL; }
+            hbmMask_cache = CreateBitmap(w, h, 1, 1, NULL);
+            hbmMask_cache_w = w;
+            hbmMask_cache_h = h;
+        }
+
+        {
+            int dib_stride_mask = ((w + 7) / 8 + 3) & ~3;
+            std::vector<BYTE> packed_mask(dib_stride_mask * h, 0);
+            int src_stride_mask = (w + 7) / 8;
+            for (int r = 0; r < h; ++r)
+                memcpy(&packed_mask[r * dib_stride_mask], &maskBits[r * src_stride_mask], src_stride_mask);
+            struct { BITMAPINFOHEADER bih; RGBQUAD colors[2]; } bmiGrayMask = {};
+            bmiGrayMask.bih.biSize        = sizeof(BITMAPINFOHEADER);
+            bmiGrayMask.bih.biWidth       = w;
+            bmiGrayMask.bih.biHeight      = -h;
+            bmiGrayMask.bih.biPlanes      = 1;
+            bmiGrayMask.bih.biBitCount    = 1;
+            bmiGrayMask.bih.biCompression = BI_RGB;
+            bmiGrayMask.colors[0] = { 0,   0,   0, 0 };
+            bmiGrayMask.colors[1] = { 255, 255, 255, 0 };
+            SetDIBits(NULL, hbmMask_cache, 0, h, packed_mask.data(),
+                      reinterpret_cast<BITMAPINFO*>(&bmiGrayMask), DIB_RGB_COLORS);
+        }
+
+        MaskBlt(hdc, left, top, w, h,
+                hdcSrc, 0, 0,
+                hbmMask_cache, 0, 0,
+                MAKEROP4(SRCCOPY, 0x00AA0029 /* DST */));
+
+        // hbmMask_cache は再利用するため DeleteObject しない
+    }
+
+    SelectObject(hdcSrc, hbmSrcOld);
+    DeleteObject(hbmSrc);
+    DeleteDC(hdcSrc);
 }
 
 void EmulatedExtTextOutW(
-    HDC hDC,
-    INT x,
-    INT y,
+    HDC hdc,
+    INT X,
+    INT Y,
     UINT fuOptions,
     CONST RECT *lprc,
-    const WCHAR* wide_text,
-    INT cch,
+    const WCHAR* lpString,
+    INT cchCount,
     CONST INT *lpDx,
     FontInfo* font_info,
     LONG lfHeight,
     XFORM* pxform)
 {
-    COLORREF fg_color = GetTextColor(hDC);
-    COLORREF bg_color = GetBkColor(hDC);
+    COLORREF fg_color = GetTextColor(hdc);
+    COLORREF bg_color = GetBkColor(hdc);
 
     bool is_raster = is_raster_font(font_info->path);
     FT_Face face = NULL;
@@ -912,8 +1063,8 @@ void EmulatedExtTextOutW(
         pixel_ascent = face->size->metrics.ascender >> 6;
     }
 
-    int baseline_y   = y + pixel_ascent;
-    int pen_x        = x;
+    int baseline_y   = Y + pixel_ascent;
+    int pen_x        = X;
 
     FT_Int32 load_flags;
     if (is_raster)
@@ -927,12 +1078,12 @@ void EmulatedExtTextOutW(
         load_flags = FT_LOAD_RENDER;
     }
 
-    const WCHAR* pch = wide_text;
-    for (INT i = 0; i < cch; ++i)
+    const WCHAR* pch = lpString;
+    for (INT i = 0; i < cchCount; ++i)
     {
         unsigned long codepoint = 0;
         WCHAR w1 = pch[i];
-        if (IS_HIGH_SURROGATE(w1) && i + 1 < cch) {
+        if (IS_HIGH_SURROGATE(w1) && i + 1 < cchCount) {
             WCHAR w2 = pch[i + 1];
             if (IS_LOW_SURROGATE(w2)) {
                 codepoint = MAKE_SURROGATE_PAIR(w1, w2);
@@ -1001,7 +1152,7 @@ void EmulatedExtTextOutW(
 
         int glyph_y = baseline_y - slot->bitmap_top;
 
-        draw_glyph(hDC, &slot->bitmap,
+        draw_glyph(hdc, &slot->bitmap,
                    pen_x + slot->bitmap_left,
                    glyph_y,
                    fg_color, bg_color);
@@ -1019,13 +1170,20 @@ void EmulatedExtTextOutW(
         FT_Done_Face(face);
 }
 
-void AppMain(void)
+const int WIDTH  = 300;
+const int HEIGHT = 300;
+const COLORREF BG = RGB(255, 255, 0);
+const COLORREF FG = RGB(0,   0,   0);
+const char* FONT_NAME = "MS Sans Serif";
+const LONG FONT_SIZE = -20;
+const WCHAR* text = L"FreeType Draw";
+
+HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform)
 {
-    const char* font_name = FONT_NAME;
-    FontInfo* font_info = find_font_by_name(font_name, 0, abs(FONT_SIZE));
+    FontInfo* font_info = find_font_by_name(font_name, 0, abs(font_size));
     if (!font_info) {
         printf("'%s': not found\n", font_name);
-        return;
+        return NULL;
     }
     printf("Using font: %s\n", font_info->path.c_str());
 
@@ -1033,21 +1191,78 @@ void AppMain(void)
     HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
     ReleaseDC(NULL, hScreenDC);
 
-    HDC hDC = CreateCompatibleDC(NULL);
-    HGDIOBJ hbmOld = SelectObject(hDC, hbm);
+    HDC hdc = CreateCompatibleDC(NULL);
+    HGDIOBJ hbmOld = SelectObject(hdc, hbm);
 
-    // 背景を白で塗りつぶす
     RECT rc = { 0, 0, WIDTH, HEIGHT };
-    HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(hDC, &rc, hBrush);
-    DeleteObject(hBrush);
+    FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-    const WCHAR* lines[] = {
-        L"FreeType Draw",
-    };
-    int num_lines = static_cast<int>(sizeof(lines) / sizeof(lines[0]));
-    int line_height = abs(FONT_SIZE) + 8;
-    int start_y = abs(FONT_SIZE) + 10;
+    SetBkMode(hdc, OPAQUE);
+    SetBkColor(hdc, BG);
+    SetTextColor(hdc, FG);
+    EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL,
+                        font_info, font_size, &xform);
+
+    SelectObject(hdc, hbmOld);
+    DeleteDC(hdc);
+
+    return hbm;
+}
+
+HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform)
+{
+    HDC hScreenDC = GetDC(NULL);
+    HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
+    ReleaseDC(NULL, hScreenDC);
+
+    HDC hdc = CreateCompatibleDC(NULL);
+    HGDIOBJ hbmOld = SelectObject(hdc, hbm);
+
+    RECT rc = { 0, 0, WIDTH, HEIGHT };
+    FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+
+    SetGraphicsMode(hdc, GM_ADVANCED);
+
+    SetWorldTransform(hdc, &xform);
+
+    LOGFONTA lf;
+    memset(&lf, 0, sizeof(lf));
+    lf.lfHeight = font_size;
+    lstrcpyA(lf.lfFaceName, font_name);
+    lf.lfCharSet = DEFAULT_CHARSET;
+    HFONT hFont = CreateFontIndirectA(&lf);
+    HGDIOBJ hFontOld = SelectObject(hdc, hFont);
+    ExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
+    SelectObject(hdc, hFontOld);
+    DeleteObject(hFont);
+
+    SelectObject(hdc, hbmOld);
+    DeleteDC(hdc);
+
+    return hbm;
+}
+
+bool TestEntry(const char* font_name, int font_size, XFORM& xform)
+{
+    HBITMAP hbm1 = TestFreeType(font_name, font_size, xform);
+    HBITMAP hbm2 = TestGdi(font_name, font_size, xform);
+    BOOL ret = nearly_equal_bitmap(hbm1, hbm2, 16);
+    DeleteObject(hbm2);
+    DeleteObject(hbm1);
+    if (ret)
+        printf("%s, %d: Success!\n", font_name, font_size);
+    else
+        printf("%s, %d: FAILED\n", font_name, font_size);
+    return ret;
+}
+
+int main(int argc, char** argv)
+{
+    const char* font_name = FONT_NAME;
+    int font_size = FONT_SIZE;
+
+    if (argc >= 2) font_name = argv[1];
+    if (argc >= 3) font_size = atoi(argv[2]);
 
     XFORM xform;
     xform.eM11 = 1;
@@ -1057,54 +1272,13 @@ void AppMain(void)
     xform.eDx = 0;
     xform.eDy = 0;
 
-    SetGraphicsMode(hDC, GM_ADVANCED);
-
-    rc = { 0, 0, 50, 50 };
-
-    for (int i = 0; i < num_lines; ++i)
-    {
-        xform.eDy = 0;
-        ModifyWorldTransform(hDC, NULL, MWT_IDENTITY);
-
-        SetBkMode(hDC, OPAQUE);
-        SetBkColor(hDC, BG);
-        SetTextColor(hDC, FG);
-        EmulatedExtTextOutW(hDC,10, start_y + i * line_height, 0,
-                            &rc, lines[i], lstrlenW(lines[i]), NULL,
-                            font_info, FONT_SIZE, &xform);
-
-        xform.eDy = 100;
-        SetWorldTransform(hDC, &xform);
-
-        LOGFONTA lf;
-        memset(&lf, 0, sizeof(lf));
-        lf.lfHeight = FONT_SIZE;
-        lstrcpyA(lf.lfFaceName, font_name);
-        lf.lfCharSet = DEFAULT_CHARSET;
-        HFONT hFont = CreateFontIndirectA(&lf);
-        HGDIOBJ hFontOld = SelectObject(hDC, hFont);
-        ExtTextOutW(hDC, 10, start_y + i * line_height, 0,
-                    &rc, lines[i], lstrlenW(lines[i]), NULL);
-        SelectObject(hDC, hFontOld);
-        DeleteObject(hFont);
-    }
-
-    SelectObject(hDC, hbmOld);
-    DeleteDC(hDC);
-
-    SaveBitmapToFileA("a.bmp", hbm);
-    DeleteObject(hbm);
-}
-
-int main(void)
-{
     if (!InitFontSupport()) {
         FreeFontSupport();
         return -1;
     }
 
-    AppMain();
+    bool ret = TestEntry(font_name, font_size, xform);
 
     FreeFontSupport();
-    return 0;
+    return ret ? 0 : 1;
 }
