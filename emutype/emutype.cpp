@@ -91,8 +91,8 @@ FTC_Manager cache_manager;
 
 const int WIDTH  = 300;
 const int HEIGHT = 300;
-const COLORREF BG = RGB(255, 255, 255); // 白背景
-const COLORREF FG = RGB(0,   0,   0);   // 黒文字
+const COLORREF BG = RGB(255, 255, 0);
+const COLORREF FG = RGB(0,   0,   0);
 const char* FONT_NAME = "MS Sans Serif";
 const LONG FONT_SIZE = -20;
 
@@ -828,7 +828,7 @@ void draw_glyph(HDC hDC, FT_Bitmap* bitmap, int left, int top,
     }
 }
 
-void draw_text_wide(
+void EmulatedExtTextOutW(
     HDC hDC,
     INT x,
     INT y,
@@ -1038,7 +1038,7 @@ void AppMain(void)
 
     // 背景を白で塗りつぶす
     RECT rc = { 0, 0, WIDTH, HEIGHT };
-    HBRUSH hBrush = CreateSolidBrush(BG);
+    HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
     FillRect(hDC, &rc, hBrush);
     DeleteObject(hBrush);
 
@@ -1057,17 +1057,23 @@ void AppMain(void)
     xform.eDx = 0;
     xform.eDy = 0;
 
+    SetGraphicsMode(hDC, GM_ADVANCED);
+
+    rc = { 0, 0, 50, 50 };
+
     for (int i = 0; i < num_lines; ++i)
     {
+        xform.eDy = 0;
         ModifyWorldTransform(hDC, NULL, MWT_IDENTITY);
 
         SetBkMode(hDC, OPAQUE);
         SetBkColor(hDC, BG);
         SetTextColor(hDC, FG);
-        draw_text_wide(hDC,10, start_y + i * line_height, 0,
-                       NULL, lines[i], lstrlenW(lines[i]), NULL,
-                       font_info, FONT_SIZE, &xform);
+        EmulatedExtTextOutW(hDC,10, start_y + i * line_height, 0,
+                            &rc, lines[i], lstrlenW(lines[i]), NULL,
+                            font_info, FONT_SIZE, &xform);
 
+        xform.eDy = 100;
         SetWorldTransform(hDC, &xform);
 
         LOGFONTA lf;
@@ -1077,8 +1083,8 @@ void AppMain(void)
         lf.lfCharSet = DEFAULT_CHARSET;
         HFONT hFont = CreateFontIndirectA(&lf);
         HGDIOBJ hFontOld = SelectObject(hDC, hFont);
-        ExtTextOutW(hDC, 10, start_y + i * line_height + 100, 0,
-                   NULL, lines[i], lstrlenW(lines[i]), NULL);
+        ExtTextOutW(hDC, 10, start_y + i * line_height, 0,
+                    &rc, lines[i], lstrlenW(lines[i]), NULL);
         SelectObject(hDC, hFontOld);
         DeleteObject(hFont);
     }
