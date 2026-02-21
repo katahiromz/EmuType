@@ -1127,7 +1127,7 @@ const int WIDTH  = 300;
 const int HEIGHT = 300;
 const COLORREF BG = RGB(255, 255, 0);
 const COLORREF FG = RGB(0,   0,   0);
-const char* FONT_NAME = "Courier New";
+const char* FONT_NAME = "Courier News";
 const LONG FONT_SIZE = 20;
 const WCHAR* text = L"FreeType Draw";
 

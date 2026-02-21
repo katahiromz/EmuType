@@ -1,6 +1,25 @@
 #include <windows.h>
 #include <stdio.h>
 
+void get_box(BITMAP& bm, COLORREF* pixels, INT& min_x, INT& min_y, INT& max_x, INT& max_y)
+{
+    min_x = min_y = 10000;
+    max_x = max_y = -10000;
+    INT i = 0;
+    for (INT y = 0; y < bm.bmHeight; ++y) {
+        for (INT x = 0; x < bm.bmWidth; ++x) {
+            COLORREF color = pixels[i] & 0xFFFFFF;
+            if (color != 0xFFFFFF) {
+                if (x < min_x) min_x = x;
+                if (y < min_y) min_y = y;
+                if (x > max_x) max_x = x;
+                if (y > max_y) max_y = y;
+            }
+            ++i;
+        }
+    }
+}
+
 BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2)
 {
     BITMAP bm1, bm2;
@@ -31,27 +50,23 @@ BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2)
     GetDIBits(hdc, hbm1, 0, bm1.bmHeight, pixels1, &bmi, DIB_RGB_COLORS);
     GetDIBits(hdc, hbm2, 0, bm2.bmHeight, pixels2, &bmi, DIB_RGB_COLORS);
 
-    int diffCount = 0;
-    for (int i = 0; i < pixelCount; ++i) {
-        if (pixels1[i] != pixels2[i]) {
-            BYTE b10 = GetRValue(pixels1[i]);
-            BYTE b11 = GetGValue(pixels1[i]);
-            BYTE b12 = GetBValue(pixels1[i]);
-            BYTE b20 = GetRValue(pixels2[i]);
-            BYTE b21 = GetGValue(pixels2[i]);
-            BYTE b22 = GetBValue(pixels2[i]);
-            int diff_sum = (abs(b10 - b20) + abs(b11 - b21) + abs(b12 - b22)) / 3;
-            if (diff_sum >= 255 / 100)
-            {
-                diffCount++;
-            }
-        }
-    }
+    INT min_x1, min_y1, max_x1, max_y1;
+    get_box(bm1, pixels1, min_x1, min_y1, max_x1, max_y1);
+
+    INT min_x2, min_y2, max_x2, max_y2;
+    get_box(bm2, pixels2, min_x2, min_y2, max_x2, max_y2);
+
+    INT sum = 0;
+    sum += abs(min_x1 - min_x2);
+    sum += abs(min_y1 - min_y2);
+    sum += abs(max_x1 - max_x2);
+    sum += abs(max_y1 - max_y2);
 
     delete[] pixels1;
     delete[] pixels2;
     ReleaseDC(NULL, hdc);
 
-    printf("%d %d\n", diffCount, (bm1.bmWidth * bm1.bmHeight) / 100);
-    return diffCount <= (bm1.bmWidth * bm1.bmHeight) / 100;
+    int threshould = ((bm1.bmWidth + bm1.bmHeight) / 2) * 20 / 100; // 20%
+    printf("%d %d\n", sum, threshould);
+    return sum <= threshould;
 }
