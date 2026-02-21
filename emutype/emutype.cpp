@@ -1116,12 +1116,28 @@ BOOL EmulatedExtTextOutW(
             return FALSE;
         face_needs_done = true;
 
+        if (face->num_fixed_sizes > 0) {
+            // lfHeight に最も近いサイズを選ぶ
+            int best_idx = 0;
+            int best_diff = abs(face->available_sizes[0].height - abs(lfHeight));
+            for (int si = 1; si < face->num_fixed_sizes; ++si) {
+                int diff = abs(face->available_sizes[si].height - abs(lfHeight));
+                if (diff < best_diff) { best_diff = diff; best_idx = si; }
+            }
+
+            FT_Select_Size(face, best_idx);
+        }
+
         // Added immediately after FT_Select_Size
         bool has_fnt_header = (FT_Get_WinFNT_Header(face, &WinFNT) == 0);
         printf("first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
             WinFNT.first_char, WinFNT.last_char, WinFNT.default_char);
 
-        pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
+        if (has_fnt_header) {
+            pixel_ascent = WinFNT.ascent;
+        } else {
+            pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
+        }
         baseline_y   = Y + pixel_ascent;
     }
     else
