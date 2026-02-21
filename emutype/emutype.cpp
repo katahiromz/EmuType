@@ -32,7 +32,7 @@ const COLORREF BG = RGB(255, 255, 0);
 const COLORREF FG = RGB(0,   0,   0);
 const char* FONT_NAME = "Tahoma";
 const LONG FONT_SIZE = 30;
-const WCHAR* text = L"iiiiiiiiiiiiiiiiiiiiii";
+const WCHAR* text = L"EmuType Draw";
 const COLORREF color1 = RGB(0, 0, 0);
 const COLORREF color2 = RGB(255, 255, 0);
 
