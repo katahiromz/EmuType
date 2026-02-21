@@ -958,11 +958,21 @@ BOOL EmulatedExtTextOutW(
     CONST RECT *lprc,
     const WCHAR* lpString,
     INT Count,
-    CONST INT *lpDx,
-    FontInfo* font_info,
-    LONG lfHeight,
-    XFORM* pxform)
+    CONST INT *lpDx)
 {
+    HFONT hFont = (HFONT)GetCurrentObject(hdc, OBJ_FONT);
+
+    LOGFONTA lf;
+    GetObjectA(hFont, sizeof(lf), &lf);
+    FontInfo* font_info = find_font_by_logfont(&lf);
+    if (!font_info) {
+        printf("'%s': not found\n", lf.lfFaceName);
+        return FALSE;
+    }
+    LONG lfHeight = lf.lfHeight;
+
+    printf("Using font: %s, %ld\n", font_info->path.c_str(), lfHeight);
+
     POINT Start, CurPos;
     LONGLONG RealXStart64, RealYStart64;
 
@@ -993,8 +1003,8 @@ BOOL EmulatedExtTextOutW(
     MaskRect.left = 0;
     MaskRect.top = 0;
 
-    XFORM mxWorldToDevice;
-    GetWorldTransform(hdc, &mxWorldToDevice);
+    XFORM xform;
+    GetWorldTransform(hdc, &xform);
 
     if (lprc && (fuOptions & (ETO_CLIPPED | ETO_OPAQUE)))
     {
@@ -1205,16 +1215,6 @@ BOOL EmulatedExtTextOutW(
 
 HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform, HFONT hFont)
 {
-    LOGFONTA lf;
-    GetObjectA(hFont, sizeof(lf), &lf);
-    FontInfo* font_info = find_font_by_logfont(&lf);
-    if (!font_info) {
-        printf("'%s': not found\n", font_name);
-        return NULL;
-    }
-
-    printf("Using font: %s\n", font_info->path.c_str());
-
     HDC hScreenDC = GetDC(NULL);
     HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
     ReleaseDC(NULL, hScreenDC);
@@ -1229,8 +1229,12 @@ HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform, HFONT h
     SetBkMode(hdc, TRANSPARENT);
     SetBkColor(hdc, color2);
 
-    EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL,
-                        font_info, font_size, &xform);
+    SetGraphicsMode(hdc, GM_ADVANCED);
+    SetWorldTransform(hdc, &xform);
+
+    HGDIOBJ hFontOld = SelectObject(hdc, hFont);
+    EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
+    SelectObject(hdc, hFontOld);
 
     SelectObject(hdc, hbmOld);
     DeleteDC(hdc);
