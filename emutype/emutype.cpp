@@ -23,6 +23,19 @@
 
 #define _TMPF_VARIABLE_PITCH TMPF_FIXED_PITCH // TMPF_FIXED_PITCH is brain dead api
 
+const int WIDTH  = 300;
+const int HEIGHT = 300;
+const COLORREF BG = RGB(255, 255, 0);
+const COLORREF FG = RGB(0,   0,   0);
+const char* FONT_NAME = "Courier New";
+const LONG FONT_SIZE = 20;
+const WCHAR* text = L"FreeType Draw";
+const COLORREF color1 = RGB(0, 0, 0);
+const COLORREF color2 = RGB(255, 255, 0);
+
+// 今回は別のレジストリキーでテストする。
+const char* reg_key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
+
 /*
  *  For TranslateCharsetInfo
  */
@@ -68,9 +81,6 @@ static const CHARSETINFO g_FontTci[MAXTCIINDEX] =
     { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
     { SYMBOL_CHARSET, CP_SYMBOL, {{0,0,0,0},{FS_SYMBOL,0}} }
 };
-
-// 今回は別のレジストリキーでテストする。
-const char* reg_key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
 
 struct FontInfo {
     std::string path; // ANSI
@@ -1123,14 +1133,6 @@ void EmulatedExtTextOutW(
         FT_Done_Face(face);
 }
 
-const int WIDTH  = 300;
-const int HEIGHT = 300;
-const COLORREF BG = RGB(255, 255, 0);
-const COLORREF FG = RGB(0,   0,   0);
-const char* FONT_NAME = "Courier News";
-const LONG FONT_SIZE = 20;
-const WCHAR* text = L"FreeType Draw";
-
 HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform)
 {
     FontInfo* font_info = find_font_by_name(font_name, 0, font_size);
@@ -1150,9 +1152,9 @@ HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform)
     RECT rc = { 0, 0, WIDTH, HEIGHT };
     FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
+    SetTextColor(hdc, color1);
     SetBkMode(hdc, TRANSPARENT);
-    SetBkColor(hdc, BG);
-    SetTextColor(hdc, FG);
+    SetBkColor(hdc, color2);
 
     EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL,
                         font_info, font_size, &xform);
@@ -1175,9 +1177,9 @@ HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform)
     RECT rc = { 0, 0, WIDTH, HEIGHT };
     FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
+    SetTextColor(hdc, color1);
     SetBkMode(hdc, TRANSPARENT);
-    SetBkColor(hdc, BG);
-    SetTextColor(hdc, FG);
+    SetBkColor(hdc, color2);
 
     SetGraphicsMode(hdc, GM_ADVANCED);
     SetWorldTransform(hdc, &xform);
@@ -1207,7 +1209,7 @@ bool TestEntry(const char* font_name, int font_size, XFORM& xform)
         printf("!hbm1\n");
     if (!hbm2)
         printf("!hbm2\n");
-    BOOL ret = nearly_equal_bitmap(hbm1, hbm2);
+    BOOL ret = nearly_equal_bitmap(hbm1, hbm2, color1, color2);
     if (ret)
     {
         printf("%s, %d: Success!\n", font_name, font_size);
