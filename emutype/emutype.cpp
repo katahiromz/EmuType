@@ -1172,7 +1172,7 @@ BOOL EmulatedExtTextOutW(
     FT_Pos current_pen_y = (FT_Pos)baseline_y << 6;
     int lpDx_accumulated = 0;
     FT_UInt previous_glyph = 0; // Holds the previous glyph index
-    bool has_kerning = FT_HAS_KERNING(face); // Whether the font has kerning information
+    bool use_kerning = false;
 
     const WCHAR* pch = lpString;
     for (INT i = 0; i < Count; ++i)
@@ -1227,7 +1227,7 @@ BOOL EmulatedExtTextOutW(
             glyph_index = FT_Get_Char_Index(face, codepoint);
         }
 
-        if (has_kerning && previous_glyph != 0 && glyph_index != 0) {
+        if (use_kerning && previous_glyph != 0 && glyph_index != 0) {
             FT_Vector delta;
             FT_Get_Kerning(face, previous_glyph, glyph_index, FT_KERNING_DEFAULT, &delta);
             current_pen_x += delta.x;
