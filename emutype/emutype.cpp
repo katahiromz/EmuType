@@ -467,18 +467,39 @@ bool load_font(const char *path, int face_index)
         charsets.push_back(DEFAULT_CHARSET);
 
     for (BYTE cs : charsets) {
-        FontInfo* info = new FontInfo();
-        info->path = path;
-        info->face_index = iStart;
-        info->family_name = get_family_name(face, true);
-        info->english_name = get_family_name(face, false);
-        info->style_flags = face->style_flags;
-        info->em_ascender  = face->ascender;
-        info->em_descender = face->descender;
-        info->em_units = face->units_per_EM;
-        info->charset = cs;
-        info->raster_height = raster_height;
-        registered_fonts.push_back(info);
+        if (face->num_fixed_sizes > 0) {
+            for (int i = 0; i < face->num_fixed_sizes; ++i)
+            {
+                int height = face->available_sizes[i].height;
+                FT_Select_Size(face, i);
+
+                FontInfo* info = new FontInfo();
+                info->path = path;
+                info->face_index = iStart;
+                info->family_name = get_family_name(face, true);
+                info->english_name = get_family_name(face, false);
+                info->style_flags = face->style_flags;
+                info->em_ascender  = face->ascender;
+                info->em_descender = face->descender;
+                info->em_units = face->units_per_EM;
+                info->charset = cs;
+                info->raster_height = height;
+                registered_fonts.push_back(info);
+            }
+        } else {
+            FontInfo* info = new FontInfo();
+            info->path = path;
+            info->face_index = iStart;
+            info->family_name = get_family_name(face, true);
+            info->english_name = get_family_name(face, false);
+            info->style_flags = face->style_flags;
+            info->em_ascender  = face->ascender;
+            info->em_descender = face->descender;
+            info->em_units = face->units_per_EM;
+            info->charset = cs;
+            info->raster_height = raster_height;
+            registered_fonts.push_back(info);
+        }
     }
 
     FT_Done_Face(face);
@@ -787,19 +808,21 @@ FontInfo* find_font_by_logfont(const LOGFONTA *plf)
             continue;
         }
 
-        int charset_penalty = 0;
+        int charset_penalty = 0, size_penalty = 0;
         if (preferred_charset != DEFAULT_CHARSET && info->charset != preferred_charset)
             charset_penalty += 10000;
 
         if (is_raster_font(info->path))
         {
-            int size_penalty = abs(info->raster_height - preferred_height);
-            total_penalty = charset_penalty + size_penalty;
+            int size;
+            if (preferred_height < 0 || preferred_height > 0)
+                size = labs(preferred_height);
+            else
+                size = 12;
+            size_penalty = abs(info->raster_height - size);
         }
-        else
-        {
-            total_penalty   = charset_penalty;
-        }
+
+        total_penalty = charset_penalty + size_penalty;
 
         if (total_penalty < best_penalty)
         {
@@ -1092,23 +1115,6 @@ BOOL EmulatedExtTextOutW(
                         font_info->face_index, &face) != 0)
             return FALSE;
         face_needs_done = true;
-
-        // Select the fixed size closest to the requested size
-        int target_h;
-        if (lfHeight < 0)
-            target_h = font_info->raster_height;
-        else if (lfHeight > 0)
-            target_h = lfHeight;
-        else
-            target_h = 12;
-
-        int best_idx = 0, best_diff = INT_MAX;
-        for (int i = 0; i < face->num_fixed_sizes; ++i)
-        {
-            int diff = abs(face->available_sizes[i].height - target_h);
-            if (diff < best_diff) { best_diff = diff; best_idx = i; }
-        }
-        FT_Select_Size(face, best_idx);
 
         // Added immediately after FT_Select_Size
         bool has_fnt_header = (FT_Get_WinFNT_Header(face, &WinFNT) == 0);
