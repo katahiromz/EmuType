@@ -1207,7 +1207,7 @@ bool TestEntry(const char* font_name, int font_size, XFORM& xform)
         printf("!hbm1\n");
     if (!hbm2)
         printf("!hbm2\n");
-    BOOL ret = nearly_equal_bitmap(hbm1, hbm2, 16);
+    BOOL ret = nearly_equal_bitmap(hbm1, hbm2);
     if (ret)
     {
         printf("%s, %d: Success!\n", font_name, font_size);
@@ -1215,9 +1215,9 @@ bool TestEntry(const char* font_name, int font_size, XFORM& xform)
     else
     {
         printf("%s, %d: FAILED\n", font_name, font_size);
-        SaveBitmapToFile("a.bmp", hbm1);
-        SaveBitmapToFile("b.bmp", hbm2);
     }
+    SaveBitmapToFile("a.bmp", hbm1);
+    SaveBitmapToFile("b.bmp", hbm2);
     DeleteObject(hbm2);
     DeleteObject(hbm1);
     return ret;
@@ -1228,9 +1228,6 @@ int main(int argc, char** argv)
     const char* font_name = FONT_NAME;
     int font_size = FONT_SIZE;
 
-    if (argc >= 2) font_name = argv[1];
-    if (argc >= 3) font_size = atoi(argv[2]);
-
     XFORM xform;
     xform.eM11 = 1;
     xform.eM12 = 0;
@@ -1238,6 +1235,13 @@ int main(int argc, char** argv)
     xform.eM22 = 1;
     xform.eDx = 0;
     xform.eDy = 0;
+
+    if (argc >= 2) font_name = argv[1];
+    if (argc >= 3) font_size = atoi(argv[2]);
+    if (argc >= 4) xform.eM11 = atoi(argv[3]);
+    if (argc >= 5) xform.eM12 = atoi(argv[4]);
+    if (argc >= 6) xform.eM21 = atoi(argv[5]);
+    if (argc >= 7) xform.eM22 = atoi(argv[6]);
 
     if (!InitFontSupport()) {
         FreeFontSupport();

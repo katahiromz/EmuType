@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 
-BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2, int threshold)
+BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2)
 {
     BITMAP bm1, bm2;
     if (!GetObject(hbm1, sizeof(bm1), &bm1) ||
@@ -40,9 +40,8 @@ BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2, int threshold)
             BYTE b20 = GetRValue(pixels2[i]);
             BYTE b21 = GetGValue(pixels2[i]);
             BYTE b22 = GetBValue(pixels2[i]);
-            if (abs(b10 - b20) > 5 ||
-                abs(b11 - b21) > 5 ||
-                abs(b12 - b22) > 5)
+            int diff_sum = (abs(b10 - b20) + abs(b11 - b21) + abs(b12 - b22)) / 3;
+            if (diff_sum >= 255 / 100)
             {
                 diffCount++;
             }
@@ -53,6 +52,6 @@ BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2, int threshold)
     delete[] pixels2;
     ReleaseDC(NULL, hdc);
 
-    // Returns TRUE if differences are within the allowed limit
-    return diffCount <= threshold;
+    printf("%d %d\n", diffCount, (bm1.bmWidth * bm1.bmHeight) / 100);
+    return diffCount <= (bm1.bmWidth * bm1.bmHeight) / 100;
 }
