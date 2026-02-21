@@ -738,7 +738,7 @@ BOOL InitFontSupport(VOID)
         error = RegEnumValueA(hKey, 0, NULL, NULL, NULL, NULL, NULL, NULL);
         if (error) {
             load_from_fonts_folder();
-            write_fonts_to_registry(hKey);
+            //write_fonts_to_registry(hKey);
         } else {
             read_fonts_from_registry(hKey);
         }
