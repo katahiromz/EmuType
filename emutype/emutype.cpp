@@ -989,21 +989,15 @@ void EmulatedExtTextOutW(
         scaler.face_id = static_cast<FTC_FaceID>(font_info);
         scaler.width   = 0;
 
-        if (lfHeight < 0) {
-            // GDIの負の値：セル高さ（アセント+ディセント）をピクセルで指定
-            // scaler.pixel = 1 の場合、height は直接ピクセル値として扱われる
-            scaler.height = static_cast<FT_UInt>(-lfHeight);
-        } else if (lfHeight > 0) {
-            // GDIの正の値：フォント全体の高さ（内部リーディングを含む）
-            // Windowsの挙動に合わせるなら、ここからリーディング分を引く計算が必要
-            scaler.height = static_cast<FT_UInt>(lfHeight); 
+        if (lfHeight > 0) {
+            scaler.height = calc_pixel_size_from_cell_height(font_info, lfHeight);
         } else {
-            scaler.height = 12;
+            scaler.height = labs(lfHeight);
         }
 
         scaler.pixel = 1;
-        scaler.x_res = 0;
-        scaler.y_res = 0;
+        scaler.x_res = 96;
+        scaler.y_res = 96;
 
         FT_Size ft_size;
         if (FTC_Manager_LookupSize(cache_manager, &scaler, &ft_size) != 0)
@@ -1021,12 +1015,17 @@ void EmulatedExtTextOutW(
     {
         // ラスタフォントは必ずモノクロビットマップで取得する
         // FT_LOAD_NO_SCALEは固定サイズそのものを使う指示
-        load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING;
+        load_flags = FT_LOAD_TARGET_NORMAL | FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING;
     }
     else
     {
-        load_flags = FT_LOAD_RENDER;
+        load_flags = FT_LOAD_TARGET_NORMAL | FT_LOAD_RENDER;
     }
+
+    FT_Pos current_pen_x = (FT_Pos)X << 6;
+    FT_Pos current_pen_y = (FT_Pos)baseline_y << 6;
+    FT_UInt previous_glyph = 0; // 前のグリフ番号を保持
+    bool has_kerning = FT_HAS_KERNING(face); // フォントがカーニング情報を持っているか
 
     const WCHAR* pch = lpString;
     for (INT i = 0; i < cchCount; ++i)
@@ -1081,6 +1080,14 @@ void EmulatedExtTextOutW(
             glyph_index = FT_Get_Char_Index(face, codepoint);
         }
 
+        // --- カーニングの計算を追加 ---
+        if (has_kerning && previous_glyph != 0 && glyph_index != 0) {
+            FT_Vector delta;
+            // FT_KERNING_DEFAULT: ヒンティング済みのグリフに合わせたカーニング量を取得
+            FT_Get_Kerning(face, previous_glyph, glyph_index, FT_KERNING_DEFAULT, &delta);
+            current_pen_x += delta.x;
+        }
+
         if (FT_Load_Glyph(face, glyph_index, load_flags) != 0)
             continue;
 
@@ -1100,11 +1107,10 @@ void EmulatedExtTextOutW(
 
         FT_GlyphSlot slot = face->glyph;
 
-        int glyph_y = baseline_y - slot->bitmap_top;
+        int draw_x = (current_pen_x >> 6) + slot->bitmap_left;
+        int draw_y = (current_pen_y >> 6) - slot->bitmap_top;
 
-        draw_glyph(hdc, &slot->bitmap,
-                   pen_x + slot->bitmap_left,
-                   glyph_y,
+        draw_glyph(hdc, &slot->bitmap, draw_x, draw_y,
                    fg_color, bg_color);
 
         printf("glyph U+%04lX: bitmap=%dx%d, advance.x=%ld (>>6=%ld), bitmap_left=%d, bitmap_top=%d\n",
@@ -1113,7 +1119,8 @@ void EmulatedExtTextOutW(
             slot->advance.x, slot->advance.x >> 6,
             slot->bitmap_left, slot->bitmap_top);
 
-        pen_x += slot->advance.x >> 6;
+        current_pen_x += slot->advance.x;
+        previous_glyph = glyph_index;
     }
 
     if (face_needs_done)
@@ -1125,12 +1132,12 @@ const int HEIGHT = 300;
 const COLORREF BG = RGB(255, 255, 0);
 const COLORREF FG = RGB(0,   0,   0);
 const char* FONT_NAME = "Courier New";
-const LONG FONT_SIZE = -20;
+const LONG FONT_SIZE = 20;
 const WCHAR* text = L"FreeType Draw";
 
 HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform)
 {
-    FontInfo* font_info = find_font_by_name(font_name, 0, abs(font_size));
+    FontInfo* font_info = find_font_by_name(font_name, 0, font_size);
     if (!font_info) {
         printf("'%s': not found\n", font_name);
         return NULL;
