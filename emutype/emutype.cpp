@@ -1440,6 +1440,22 @@ BOOL EmulatedExtTextOutW(
     GetWorldTransform(hdc, &xform);
     ModifyWorldTransform(hdc, NULL, MWT_IDENTITY);
 
+    // XFORMをFT_Matrixに変換する。
+    // XFORMの行列要素はfloatだが、FT_Matrixは16.16固定小数点数 (FT_Fixed = FT_Long) を使う。
+    // XFORM の定義:
+    //   | eM11  eM12 |     | xx  xy |
+    //   | eM21  eM22 |  =  | yx  yy |
+    // FT_Matrix の定義:
+    //   | xx  xy |
+    //   | yx  yy |
+    // ただしGDIのY軸は下向き、FreeTypeのY軸は上向きのため、
+    // せん断成分 (eM12, eM21) の符号を反転させる必要がある。
+    FT_Matrix ft_matrix;
+    ft_matrix.xx = (FT_Fixed)(xform.eM11 * 65536.0f);   // X方向スケール
+    ft_matrix.xy = (FT_Fixed)(-xform.eM21 * 65536.0f);  // X方向せん断 (Y軸反転)
+    ft_matrix.yx = (FT_Fixed)(-xform.eM12 * 65536.0f);  // Y方向せん断 (Y軸反転)
+    ft_matrix.yy = (FT_Fixed)(xform.eM22 * 65536.0f);   // Y方向スケール
+
     std::vector<INT> scaledDX(Count);
     if (lpDx) {
         for (UINT i = 0; i < Count; ++i) {
@@ -1476,6 +1492,18 @@ BOOL EmulatedExtTextOutW(
                          &WinFNT, &has_fnt_header,
                          &pixel_ascent, &pixel_descent, &baseline_y))
         return FALSE;
+
+    // FreeTypeにXFOM由来の変換行列を設定する。
+    // アウトラインフォントのみ対応（ラスターフォントは固定サイズのためスキップ）。
+    // FT_Set_Transform は FT_Load_Glyph (FT_LOAD_RENDER 含む) 時に適用され、
+    // bitmap_left / bitmap_top / advance.x / advance.y が変換後の値になる。
+    {
+        FT_Vector delta = { 0, 0 };
+        if (!is_raster)
+            FT_Set_Transform(face, &ft_matrix, &delta);
+        else
+            FT_Set_Transform(face, NULL, NULL); // ラスターフォントは変換なし
+    }
 
     FT_Int32 load_flags;
     if (is_raster)
@@ -1523,7 +1551,9 @@ BOOL EmulatedExtTextOutW(
         wprintf(L"baseline_y: %d, strWidth: %d, strHeight: %d\n", baseline_y, strWidth, strHeight);
     }
 
-    FT_Pos current_pen_x = (FT_Pos)X << 6;
+    // ペン座標はデバイス空間（LPtoDPで変換済みのStart）で管理する。
+    // current_pen_yはベースライン位置をデバイス座標で保持する。
+    FT_Pos current_pen_x = (FT_Pos)Start.x << 6;
     FT_Pos current_pen_y = (FT_Pos)baseline_y << 6;
     int lpDx_accumulated = 0;
     FT_UInt previous_glyph = 0; // Holds the previous glyph index
@@ -1602,23 +1632,31 @@ BOOL EmulatedExtTextOutW(
 
         FT_GlyphSlot slot = face->glyph;
 
+        // FT_Set_Transform適用済みの場合、bitmap_left/bitmap_topおよびadvance.x/yは
+        // すでに変換後の値になっている。
+        // current_pen_x/yはデバイス座標（変換後）で管理する。
         int draw_x = (current_pen_x >> 6) + slot->bitmap_left;
-        int draw_y = baseline_y - slot->bitmap_top;
+        int draw_y = (current_pen_y >> 6) - slot->bitmap_top;
 
         draw_glyph(hdc, &slot->bitmap, draw_x, draw_y,
                    fg_color, bg_color);
 
-        wprintf(L"glyph U+%04lX: bitmap=%dx%d, advance.x=%ld (>>6=%ld), bitmap_left=%d, bitmap_top=%d\n",
+        wprintf(L"glyph U+%04lX: bitmap=%dx%d, advance.x=%ld (>>6=%ld), advance.y=%ld (>>6=%ld), bitmap_left=%d, bitmap_top=%d\n",
             codepoint,
             slot->bitmap.width, slot->bitmap.rows,
             slot->advance.x, slot->advance.x >> 6,
+            slot->advance.y, slot->advance.y >> 6,
             slot->bitmap_left, slot->bitmap_top);
 
         if (lpDx) {
             lpDx_accumulated += lpDx[i];
-            current_pen_x = ((FT_Pos)X << 6) + ((FT_Pos)lpDx_accumulated << 6);
+            // lpDxはX方向の間隔なので、変換行列を掛けてデバイス空間に変換する
+            FT_Pos dx26 = (FT_Pos)lpDx_accumulated << 6;
+            current_pen_x = ((FT_Pos)Start.x << 6) + (FT_Pos)(dx26 * xform.eM11);
+            current_pen_y = ((FT_Pos)Start.y << 6) + (FT_Pos)(dx26 * xform.eM12);
         } else {
-            current_pen_x += (face->glyph->advance.x + 63) & ~63;
+            current_pen_x += slot->advance.x;
+            current_pen_y -= slot->advance.y; // FreeTypeY軸(上向き)→GDI Y軸(下向き)
         }
         previous_glyph = glyph_index;
     }
@@ -1631,7 +1669,7 @@ BOOL EmulatedExtTextOutW(
     return TRUE;
 }
 
-HBITMAP TestCommon(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont, BOOL bFreeType)
+HBITMAP TestCommon(PCWSTR font_name, INT font_size, const XFORM& xform, HFONT hFont, BOOL bFreeType)
 {
     HDC hScreenDC = GetDC(NULL);
     HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
@@ -1658,6 +1696,8 @@ HBITMAP TestCommon(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont, B
         ExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, ETO_OPAQUE, &rc, text, lstrlenW(text), NULL);
     SelectObject(hdc, hFontOld);
 
+    ModifyWorldTransform(hdc, NULL, MWT_IDENTITY);
+
     SelectObject(hdc, hbmOld);
     DeleteDC(hdc);
 
@@ -1676,7 +1716,7 @@ HBITMAP TestGdi(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
 
 bool TestEntry(PCWSTR font_name, int font_size, XFORM& xform)
 {
-    wprintf(L"%ls, %d: Testing\n", font_name, font_size);
+    wprintf(L"Testing: %ls %d %f %f %f %f\n", font_name, font_size, xform.eM11, xform.eM12, xform.eM21, xform.eM22);
 
     LOGFONTW lf;
     memset(&lf, 0, sizeof(lf));
@@ -1735,10 +1775,10 @@ int wmain(int argc, wchar_t** wargv)
 
     if (argc >= 2) font_name = wargv[1];
     if (argc >= 3) font_size = _wtoi(wargv[2]);
-    if (argc >= 4) xform.eM11 = _wtoi(wargv[3]);
-    if (argc >= 5) xform.eM12 = _wtoi(wargv[4]);
-    if (argc >= 6) xform.eM21 = _wtoi(wargv[5]);
-    if (argc >= 7) xform.eM22 = _wtoi(wargv[6]);
+    if (argc >= 4) xform.eM11 = wcstod(wargv[3], NULL);
+    if (argc >= 5) xform.eM12 = wcstod(wargv[4], NULL);
+    if (argc >= 6) xform.eM21 = wcstod(wargv[5], NULL);
+    if (argc >= 7) xform.eM22 = wcstod(wargv[6], NULL);
 
     if (!InitFontSupport()) {
         FreeFontSupport();
