@@ -12,7 +12,6 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
-#include FT_CACHE_H
 #include FT_SFNT_NAMES_H
 #include FT_TRUETYPE_IDS_H
 #include FT_TRUETYPE_TABLES_H
@@ -101,7 +100,6 @@ std::vector<FontInfo*> registered_fonts;
 
 WCHAR fonts_dir[MAX_PATH];
 FT_Library library;
-FTC_Manager cache_manager;
 
 HBITMAP hbmMask_cache = NULL;
 int hbmMask_cache_w = 0, hbmMask_cache_h = 0;
@@ -322,9 +320,9 @@ static bool load_VDMX(FT_Face face, int lfHeight, VdmxEntry* out)
 //
 // Converts a LOGFONT lfHeight value to a FreeType ppem value.
 //
-//   lfHeight > 0  → cell height  →  ppem = units_per_EM * lfHeight / (winAscent+winDescent)
-//   lfHeight < 0  → em   height  →  ppem = |lfHeight|
-//   lfHeight == 0 → default 16px em
+//   lfHeight > 0  ?? cell height  ??  ppem = units_per_EM * lfHeight / (winAscent+winDescent)
+//   lfHeight < 0  ?? em   height  ??  ppem = |lfHeight|
+//   lfHeight == 0 ?? default 16px em
 //
 // Uses usWinAscent/usWinDescent from OS/2 table exactly as Windows does.
 // Falls back to hhea Ascender/Descender when the OS/2 values sum to zero.
@@ -368,16 +366,6 @@ static int calc_ppem_for_height(FT_Face face, int lfHeight)
         --ppem;
 
     return (ppem > 0) ? ppem : 1;
-}
-
-FT_Error
-requester(FTC_FaceID  face_id,
-          FT_Library  lib,
-          FT_Pointer  req_data,
-          FT_Face*    aface)
-{
-    FontInfo* info = static_cast<FontInfo*>(face_id);
-    return FT_New_Face(lib, info->ansi_path, info->face_index, aface);
 }
 
 static std::wstring get_family_name(FT_Face face, FT_UShort name_id, bool localized, PCWSTR default_value)
@@ -969,12 +957,6 @@ BOOL InitFontSupport(VOID)
 
     FT_Library_SetLcdFilter(library, FT_LCD_FILTER_DEFAULT);
 
-    error = FTC_Manager_New(library, 0, 0, 0, requester, NULL, &cache_manager);
-    if (error) {
-        wprintf(L"FTC_Manager_New: %d\n", error);
-        return FALSE;
-    }
-
     HKEY hKey;
     error = RegCreateKeyExW(HKEY_CURRENT_USER, reg_key, 0, NULL, 0,
                             KEY_ALL_ACCESS, NULL, &hKey, NULL);
@@ -995,8 +977,6 @@ BOOL InitFontSupport(VOID)
 VOID FreeFontSupport(VOID)
 {
     free_fonts();
-    if (cache_manager)
-        FTC_Manager_Done(cache_manager);
     FT_Done_FreeType(library);
     DeleteObject(hbmMask_cache);
 }
@@ -1247,6 +1227,107 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
     DeleteDC(hdcSrc);
 }
 
+static bool OpenFaceForDraw(
+    FontInfo*            font_info,
+    LONG                 lfHeight,
+    INT                  Y,
+    FT_Face*             out_face,
+    FT_WinFNT_HeaderRec* out_WinFNT,
+    bool*                out_has_fnt_header,
+    int*                 out_pixel_ascent,
+    int*                 out_baseline_y)
+{
+    bool is_raster = is_raster_font(font_info->wide_path);
+    *out_face            = NULL;
+    *out_has_fnt_header  = false;
+
+    if (is_raster)
+    {
+        // ラスタフォントはキャッシュを経由せず直接開く
+        if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, out_face) != 0)
+            return false;
+
+        if ((*out_face)->num_fixed_sizes > 0) {
+            int target_cell;
+            if (lfHeight < 0)
+                target_cell = labs(lfHeight) + font_info->raster_internal_leading;
+            else
+                target_cell = abs(lfHeight);
+
+            int best_idx = 0;
+            int best_diff = abs((*out_face)->available_sizes[0].height - target_cell);
+            for (int si = 1; si < (*out_face)->num_fixed_sizes; ++si) {
+                int diff = abs((*out_face)->available_sizes[si].height - target_cell);
+                if (diff < best_diff) { best_diff = diff; best_idx = si; }
+            }
+            FT_Select_Size(*out_face, best_idx);
+        }
+
+        *out_has_fnt_header = (FT_Get_WinFNT_Header(*out_face, out_WinFNT) == 0);
+        wprintf(L"first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
+            out_WinFNT->first_char, out_WinFNT->last_char, out_WinFNT->default_char);
+
+        *out_pixel_ascent = (*out_has_fnt_header)
+            ? out_WinFNT->ascent
+            : ((*out_face)->size->metrics.ascender + 32) >> 6;
+        *out_baseline_y = Y + *out_pixel_ascent;
+    }
+    else
+    {
+        // アウトラインフォント: VDMXテーブルとWine互換フォールバックでppemを算出する。
+        // Step 1 - フォントテーブル読み取り用の一時フェイスを開く
+        FT_Face tmp_face = NULL;
+        if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, &tmp_face) != 0)
+            return false;
+
+        // Step 2 - まずVDMXを試みる（一般的なサイズでは正確なWindowsメトリクスが得られる）
+        VdmxEntry vdmx = {};
+        bool have_vdmx = load_VDMX(tmp_face, lfHeight, &vdmx);
+
+        // Step 3 - ppemを計算する
+        int ppem;
+        if (have_vdmx)
+            ppem = vdmx.ppem;
+        else
+            ppem = calc_ppem_for_height(tmp_face, lfHeight);
+
+        FT_Done_Face(tmp_face);
+
+        // Step 4 - フェイスを直接開いてサイズを設定する（キャッシュなし）
+        if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, out_face) != 0)
+            return false;
+        FT_Set_Pixel_Sizes(*out_face, 0, ppem);
+
+        // Step 5 - ピクセルアセント（セル上端からベースラインまでの距離）を決定する
+        if (have_vdmx)
+        {
+            // VDMXが正確な整数ピクセル値を提供する。
+            *out_pixel_ascent = vdmx.yMax;
+        }
+        else
+        {
+            // VDMX なし: 算出済みの em_scale で usWinAscent をスケールする。
+            // em_scale は 16.16 固定小数点: ppem / units_per_EM。
+            TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(*out_face, FT_SFNT_OS2);
+            if (os2 && (os2->usWinAscent != 0 || os2->usWinDescent != 0))
+            {
+                FT_Fixed em_scale = FT_MulDiv(
+                    (FT_Long)ppem, 1 << 16,
+                    (FT_Long)(*out_face)->units_per_EM);
+                *out_pixel_ascent = (int)FT_MulFix((FT_Long)os2->usWinAscent, em_scale);
+            }
+            else
+            {
+                *out_pixel_ascent = ((*out_face)->size->metrics.ascender + 32) >> 6;
+            }
+        }
+
+        *out_baseline_y = Y + *out_pixel_ascent;
+    }
+
+    return true;
+}
+
 BOOL EmulatedExtTextOutW(
     HDC hdc,
     INT X,
@@ -1328,109 +1409,14 @@ BOOL EmulatedExtTextOutW(
 
     bool is_raster = is_raster_font(font_info->wide_path);
     FT_Face face = NULL;
-    bool face_needs_done = false;
-
     FT_WinFNT_HeaderRec WinFNT;
     bool has_fnt_header = false;
     int pixel_ascent, baseline_y;
 
-    if (is_raster)
-    {
-        // Raster fonts are opened directly without going through the cache
-        if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, &face) != 0)
-            return FALSE;
-        face_needs_done = true;
-
-        if (face->num_fixed_sizes > 0) {
-            int target_cell;
-            if (lfHeight < 0)
-                target_cell = labs(lfHeight) + font_info->raster_internal_leading;
-            else
-                target_cell = abs(lfHeight);
-
-            int best_idx = 0;
-            int best_diff = abs(face->available_sizes[0].height - target_cell);
-            for (int si = 1; si < face->num_fixed_sizes; ++si) {
-                int diff = abs(face->available_sizes[si].height - target_cell);
-                if (diff < best_diff) { best_diff = diff; best_idx = si; }
-            }
-            FT_Select_Size(face, best_idx);
-        }
-
-        // Added immediately after FT_Select_Size
-        bool has_fnt_header = (FT_Get_WinFNT_Header(face, &WinFNT) == 0);
-        wprintf(L"first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
-            WinFNT.first_char, WinFNT.last_char, WinFNT.default_char);
-
-        if (has_fnt_header) {
-            pixel_ascent = WinFNT.ascent;
-        } else {
-            pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
-        }
-        baseline_y   = Y + pixel_ascent;
-    }
-    else
-    {
-        // Outline fonts: compute ppem with VDMX then Wine-compatible fallback.
-        // Step 1 - open a temporary face to read font tables (calc_ppem_for_height
-        //          and load_VDMX need the raw FT_Face, not the cached FT_Size).
-        FT_Face tmp_face = NULL;
-        if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, &tmp_face) != 0)
-            return FALSE;
-
-        // Step 2 - try VDMX first (exact Windows metrics for common sizes)
-        VdmxEntry vdmx = {};
-        bool have_vdmx = load_VDMX(tmp_face, lfHeight, &vdmx);
-
-        // Step 3 - compute ppem
-        int ppem;
-        if (have_vdmx)
-            ppem = vdmx.ppem;
-        else
-            ppem = calc_ppem_for_height(tmp_face, lfHeight);
-
-        FT_Done_Face(tmp_face);
-
-        // Step 4 - look up (or create) the sized face in the cache
-        FTC_ScalerRec scaler;
-        scaler.face_id = static_cast<FTC_FaceID>(font_info);
-        scaler.width   = 0;
-        scaler.height  = ppem;
-        scaler.pixel   = 1;
-        scaler.x_res   = 96;
-        scaler.y_res   = 96;
-
-        FT_Size ft_size;
-        if (FTC_Manager_LookupSize(cache_manager, &scaler, &ft_size) != 0)
-            return FALSE;
-        face = ft_size->face;
-
-        // Step 5 - determine pixel ascent (= distance from top of cell to baseline)
-        if (have_vdmx)
-        {
-            // VDMX gives us exact integer pixel values - use them directly.
-            pixel_ascent = vdmx.yMax;
-        }
-        else
-        {
-            // No VDMX: scale usWinAscent with the em_scale we just computed.
-            // em_scale is a 16.16 fixed-point value: ppem / units_per_EM.
-            TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
-            if (os2 && (os2->usWinAscent != 0 || os2->usWinDescent != 0))
-            {
-                FT_Fixed em_scale = FT_MulDiv(
-                    (FT_Long)ppem, 1 << 16,
-                    (FT_Long)face->units_per_EM);
-                pixel_ascent = (int)FT_MulFix((FT_Long)os2->usWinAscent, em_scale);
-            }
-            else
-            {
-                pixel_ascent = (face->size->metrics.ascender + 32) >> 6;
-            }
-        }
-
-        baseline_y = Y + pixel_ascent;
-    }
+    if (!OpenFaceForDraw(font_info, lfHeight, Y, &face,
+                         &WinFNT, &has_fnt_header,
+                         &pixel_ascent, &baseline_y))
+        return FALSE;
 
     FT_Int32 load_flags;
     if (is_raster)
@@ -1547,7 +1533,7 @@ BOOL EmulatedExtTextOutW(
         previous_glyph = glyph_index;
     }
 
-    if (face_needs_done)
+    if (face)
         FT_Done_Face(face);
 
     return TRUE;
