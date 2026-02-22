@@ -1284,7 +1284,9 @@ static bool OpenFaceForDraw(
     return true;
 }
 
-static int CalcStringWidthFT(
+static int get_text_disposition(
+    int* width,
+    int* height,
     FontInfo*    font_info,
     FT_Face      face,
     bool         is_raster,
@@ -1294,6 +1296,8 @@ static int CalcStringWidthFT(
 {
     if (!lpString || Count <= 0)
         return 0;
+
+    *width = *height = 0;
 
     if (lpDx)
     {
@@ -1308,7 +1312,7 @@ static int CalcStringWidthFT(
         ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING)
         : (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LCD  | FT_LOAD_FORCE_AUTOHINT);
 
-    FT_Pos total_x = 0;
+    FT_Pos total_x = 0, total_y = 0;
     FT_UInt previous_glyph = 0;
     bool use_kerning = (FT_HAS_KERNING(face) != 0);
 
@@ -1361,17 +1365,19 @@ static int CalcStringWidthFT(
             FT_Vector delta;
             FT_Get_Kerning(face, previous_glyph, glyph_index, FT_KERNING_DEFAULT, &delta);
             total_x += delta.x;
+            total_y += delta.y;
         }
 
         if (FT_Load_Glyph(face, glyph_index, load_flags) != 0)
             continue;
 
         total_x += (face->glyph->advance.x + 63) & ~63;
+        total_y += (face->glyph->advance.y + 63) & ~63;
         previous_glyph = glyph_index;
     }
 
-    // 26.6 fixed-point → ピクセル
-    return (int)(total_x >> 6);
+    *width = (total_x >> 6);
+    *height = (total_y >> 6);
 }
 
 BOOL EmulatedExtTextOutW(
@@ -1427,13 +1433,14 @@ BOOL EmulatedExtTextOutW(
     MaskRect.left = 0;
     MaskRect.top = 0;
 
-    XFORM xform;
-    GetWorldTransform(hdc, &xform);
-
     if (lprc && (fuOptions & (ETO_CLIPPED | ETO_OPAQUE)))
     {
         LPtoDP(hdc, (POINT*)lprc, 2);
     }
+
+    XFORM xform;
+    GetWorldTransform(hdc, &xform);
+    ModifyWorldTransform(hdc, NULL, MWT_IDENTITY);
 
     COLORREF fg_color = GetTextColor(hdc);
     COLORREF bg_color = GetBkColor(hdc);
@@ -1476,21 +1483,22 @@ BOOL EmulatedExtTextOutW(
         load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD | FT_LOAD_FORCE_AUTOHINT;
     }
 
+    UINT textAlign = GetTextAlign(hdc);
+    UINT hAlign = textAlign & (TA_LEFT | TA_CENTER | TA_RIGHT);
+    UINT vAlign = textAlign & (TA_TOP | TA_BASELINE | TA_BOTTOM);
+    if (hAlign || vAlign)
     {
-        UINT textAlign = GetTextAlign(hdc);
+        int strWidth, strHeight;
+        get_text_disposition(&strWidth, &strHeight, font_info, face, is_raster, lpString, Count, lpDx);
 
-        UINT hAlign = textAlign & (TA_LEFT | TA_CENTER | TA_RIGHT);
         if (hAlign == TA_CENTER || hAlign == TA_RIGHT)
         {
-            int strWidth = CalcStringWidthFT(font_info, face, is_raster,
-                                             lpString, Count, lpDx);
             if (hAlign == TA_CENTER)
                 X -= strWidth / 2;
             else // TA_RIGHT
                 X -= strWidth;
         }
 
-        UINT vAlign = textAlign & (TA_TOP | TA_BASELINE | TA_BOTTOM);
         if (vAlign == TA_BASELINE)
         {
             baseline_y = Y;
@@ -1603,6 +1611,8 @@ BOOL EmulatedExtTextOutW(
 
     if (face)
         FT_Done_Face(face);
+
+    SetWorldTransform(hdc, &xform)
 
     return TRUE;
 }
