@@ -1390,6 +1390,12 @@ BOOL EmulatedExtTextOutW(
     INT Count,
     CONST INT *lpDx)
 {
+    RECT rc;
+    if (lprc) {
+        rc = *lprc;
+        lprc = &rc;
+    }
+
     HFONT hFont = (HFONT)GetCurrentObject(hdc, OBJ_FONT);
 
     LOGFONTW lf;
