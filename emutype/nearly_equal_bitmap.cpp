@@ -73,7 +73,7 @@ BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2, COLORREF color1, COLORREF c
     delete[] pixels2;
     ReleaseDC(NULL, hdc);
 
-    int threshould = ((bm1.bmWidth + bm1.bmHeight) / 2) * 40 / 100; // 40%
+    int threshould = ((bm1.bmWidth + bm1.bmHeight) / 2) * 10 / 100; // 10%
     printf("%d %d\n", sum, threshould);
     return sum <= threshould;
 }

@@ -1450,6 +1450,11 @@ BOOL EmulatedExtTextOutW(
     FT_UInt previous_glyph = 0; // Holds the previous glyph index
     bool use_kerning = false;
 
+    UINT codepage = 1252;
+    CHARSETINFO csi;
+    if (TranslateCharsetInfo((DWORD*)(DWORD_PTR)font_info->charset, &csi, TCI_SRCCHARSET))
+        codepage = csi.ciACP;
+
     const WCHAR* pch = lpString;
     for (INT i = 0; i < Count; ++i)
     {
@@ -1471,19 +1476,12 @@ BOOL EmulatedExtTextOutW(
             // Convert Unicode codepoint to the FON codepage
             WCHAR wc = static_cast<WCHAR>(codepoint);
             char mb[4] = {};
-            UINT codepage = 1252;
-            CHARSETINFO csi;
-            if (TranslateCharsetInfo((DWORD*)(DWORD_PTR)font_info->charset,
-                                     &csi, TCI_SRCCHARSET))
-                codepage = csi.ciACP;
 
-            int mblen = WideCharToMultiByte(codepage, 0, &wc, 1,
-                                            mb, sizeof(mb), NULL, NULL);
+            int mblen = WideCharToMultiByte(codepage, 0, &wc, 1, mb, sizeof(mb), NULL, NULL);
             if (mblen != 1)
                 continue;
 
             unsigned char byte_val = (unsigned char)mb[0];
-
             if (byte_val < WinFNT.first_char || byte_val > WinFNT.last_char)
             {
                 // Out of range: use default_char
