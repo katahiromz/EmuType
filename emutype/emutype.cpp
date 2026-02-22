@@ -1285,6 +1285,103 @@ static bool OpenFaceForDraw(
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// CalcStringWidthFT
+// FreeType を使って lpString の描画幅 (ピクセル単位) を計算する。
+// lpDx が指定されている場合はその合計値を返す。
+// ---------------------------------------------------------------------------
+static int CalcStringWidthFT(
+    FontInfo*    font_info,
+    FT_Face      face,           // 既に pixel size が設定済みの FT_Face
+    bool         is_raster,
+    const WCHAR* lpString,
+    INT          Count,
+    CONST INT*   lpDx)
+{
+    if (!lpString || Count <= 0)
+        return 0;
+
+    // lpDx が指定されていればその合計が幅
+    if (lpDx)
+    {
+        int total = 0;
+        for (INT i = 0; i < Count; ++i)
+            total += lpDx[i];
+        return total;
+    }
+
+    UINT codepage = get_codepage_from_charset(font_info->charset);
+    FT_Int32 load_flags = is_raster
+        ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING)
+        : (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LCD  | FT_LOAD_FORCE_AUTOHINT);
+
+    FT_Pos total_x = 0;
+    FT_UInt previous_glyph = 0;
+    bool use_kerning = (FT_HAS_KERNING(face) != 0);
+
+    for (INT i = 0; i < Count; ++i)
+    {
+        unsigned long codepoint = 0;
+        WCHAR w1 = lpString[i];
+        if (IS_HIGH_SURROGATE(w1) && i + 1 < Count)
+        {
+            WCHAR w2 = lpString[i + 1];
+            if (IS_LOW_SURROGATE(w2))
+            {
+                codepoint = MAKE_SURROGATE_PAIR(w1, w2);
+                ++i;
+            }
+        }
+        else
+        {
+            codepoint = w1;
+        }
+
+        FT_UInt glyph_index;
+        if (is_raster)
+        {
+            WCHAR wc = static_cast<WCHAR>(codepoint);
+            char mb[4] = {};
+            int mblen = WideCharToMultiByte(codepage, 0, &wc, 1, mb, sizeof(mb), NULL, NULL);
+            if (mblen != 1) continue;
+            unsigned char byte_val = (unsigned char)mb[0];
+            FT_WinFNT_HeaderRec WinFNT;
+            // face から WinFNT ヘッダを取得して範囲チェック
+            if (FT_Get_WinFNT_Header(face, &WinFNT) == 0)
+            {
+                if (byte_val < WinFNT.first_char || byte_val > WinFNT.last_char)
+                    glyph_index = WinFNT.default_char - WinFNT.first_char;
+                else
+                    glyph_index = byte_val - WinFNT.first_char + 1;
+            }
+            else
+            {
+                glyph_index = FT_Get_Char_Index(face, codepoint);
+            }
+        }
+        else
+        {
+            glyph_index = FT_Get_Char_Index(face, codepoint);
+        }
+
+        if (use_kerning && previous_glyph != 0 && glyph_index != 0)
+        {
+            FT_Vector delta;
+            FT_Get_Kerning(face, previous_glyph, glyph_index, FT_KERNING_DEFAULT, &delta);
+            total_x += delta.x;
+        }
+
+        if (FT_Load_Glyph(face, glyph_index, load_flags) != 0)
+            continue;
+
+        total_x += (face->glyph->advance.x + 63) & ~63;
+        previous_glyph = glyph_index;
+    }
+
+    // 26.6 fixed-point → ピクセル
+    return (int)(total_x >> 6);
+}
+
 BOOL EmulatedExtTextOutW(
     HDC hdc,
     INT X,
@@ -1385,6 +1482,21 @@ BOOL EmulatedExtTextOutW(
     else
     {
         load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD | FT_LOAD_FORCE_AUTOHINT;
+    }
+
+    {
+        UINT textAlign = GetTextAlign(hdc);
+        UINT hAlign = textAlign & (TA_LEFT | TA_CENTER | TA_RIGHT);
+
+        if (hAlign == TA_CENTER || hAlign == TA_RIGHT)
+        {
+            int strWidth = CalcStringWidthFT(font_info, face, is_raster,
+                                             lpString, Count, lpDx);
+            if (hAlign == TA_CENTER)
+                X -= strWidth / 2;
+            else // TA_RIGHT
+                X -= strWidth;
+        }
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
@@ -1513,6 +1625,7 @@ HBITMAP TestCommon(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont, B
     SetWorldTransform(hdc, &xform);
 
     HGDIOBJ hFontOld = SelectObject(hdc, hFont);
+    SetTextAlign(hdc, TA_CENTER);
     if (bFreeType)
         EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, ETO_OPAQUE, &rc, text, lstrlenW(text), NULL);
     else
