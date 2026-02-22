@@ -1553,7 +1553,7 @@ BOOL EmulatedExtTextOutW(
     return TRUE;
 }
 
-HBITMAP TestFreeType(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
+HBITMAP TestCommon(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont, BOOL bFreeType)
 {
     HDC hScreenDC = GetDC(NULL);
     HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
@@ -1573,7 +1573,10 @@ HBITMAP TestFreeType(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
     SetWorldTransform(hdc, &xform);
 
     HGDIOBJ hFontOld = SelectObject(hdc, hFont);
-    EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
+    if (bFreeType)
+        EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
+    else
+        ExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
     SelectObject(hdc, hFontOld);
 
     SelectObject(hdc, hbmOld);
@@ -1582,33 +1585,14 @@ HBITMAP TestFreeType(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
     return hbm;
 }
 
+HBITMAP TestFreeType(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
+{
+    return TestCommon(font_name, font_size, xform, hFont, TRUE);
+}
+
 HBITMAP TestGdi(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
 {
-    HDC hScreenDC = GetDC(NULL);
-    HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
-    ReleaseDC(NULL, hScreenDC);
-
-    HDC hdc = CreateCompatibleDC(NULL);
-    HGDIOBJ hbmOld = SelectObject(hdc, hbm);
-
-    RECT rc = { 0, 0, WIDTH, HEIGHT };
-    FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
-
-    SetTextColor(hdc, color1);
-    SetBkMode(hdc, TRANSPARENT);
-    SetBkColor(hdc, color2);
-
-    SetGraphicsMode(hdc, GM_ADVANCED);
-    SetWorldTransform(hdc, &xform);
-
-    HGDIOBJ hFontOld = SelectObject(hdc, hFont);
-    ExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
-    SelectObject(hdc, hFontOld);
-
-    SelectObject(hdc, hbmOld);
-    DeleteDC(hdc);
-
-    return hbm;
+    return TestCommon(font_name, font_size, xform, hFont, FALSE);
 }
 
 bool TestEntry(PCWSTR font_name, int font_size, XFORM& xform)
