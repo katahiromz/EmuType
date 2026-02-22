@@ -404,18 +404,12 @@ static std::wstring get_family_name(FT_Face face, FT_UShort name_id, bool locali
         if (sname.platform_id == TT_PLATFORM_MICROSOFT &&
             sname.encoding_id == TT_MS_ID_UNICODE_CS)
         {
-            CHAR szAnsi[MAX_PATH];
-            for (size_t ib = 0; ib < sname.string_len && ib < MAX_PATH - 1; ib += 2) {
-                CHAR chTemp = szAnsi[ib];
-                szAnsi[ib] = szAnsi[ib + 1];
-                szAnsi[ib + 1] = chTemp;
+            int wlen = (int)sname.string_len / 2;
+            std::vector<wchar_t> wbuf(wlen + 1, 0);
+            for (int j = 0; j < wlen; ++j) {
+                wbuf[j] = (wchar_t)((sname.string[j * 2] << 8) | sname.string[j * 2 + 1]);
             }
-            szAnsi[sname.string_len] = ANSI_NULL;
-
-            WCHAR szWide[MAX_PATH];
-            _StringCchWideFromAnsi(CP_ACP, szWide, _countof(szWide), szAnsi);
-
-            name = szWide;
+            name = std::wstring(wbuf.data(), wlen);
 
             if (sname.language_id == GetUserDefaultLangID() && localized)
                 priority = 3;
@@ -969,7 +963,7 @@ BOOL InitFontSupport(VOID)
 
     FT_Error error = FT_Init_FreeType(&library);
     if (error) {
-        printf("FT_Init_FreeType: %d\n", error);
+        wprintf(L"FT_Init_FreeType: %d\n", error);
         return FALSE;
     }
 
@@ -977,7 +971,7 @@ BOOL InitFontSupport(VOID)
 
     error = FTC_Manager_New(library, 0, 0, 0, requester, NULL, &cache_manager);
     if (error) {
-        printf("FTC_Manager_New: %d\n", error);
+        wprintf(L"FTC_Manager_New: %d\n", error);
         return FALSE;
     }
 
@@ -1014,7 +1008,7 @@ FontInfo* find_font_by_logfont(const LOGFONTW *plf)
     int preferred_height = plf->lfHeight;
 
     FT_Long style_flags = 0;
-    if (plf->lfWeight > FW_NORMAL)
+    if (plf->lfWeight >= FW_BOLD)
         style_flags |= FT_STYLE_FLAG_BOLD;
     if (plf->lfItalic)
         style_flags |= FT_STYLE_FLAG_ITALIC;
@@ -1024,8 +1018,11 @@ FontInfo* find_font_by_logfont(const LOGFONTW *plf)
 
     for (auto* font_info : registered_fonts)
     {
-        if (lstrcmpiW(font_info->family_name.c_str(), font_name) != 0)
+        if (lstrcmpiW(font_info->family_name.c_str(), font_name) != 0 &&
+            lstrcmpiW(font_info->english_name.c_str(), font_name) != 0)
+        {
             continue;
+        }
 
         if (!is_raster_font(font_info->wide_path))
         {
@@ -1266,12 +1263,12 @@ BOOL EmulatedExtTextOutW(
     GetObjectW(hFont, sizeof(lf), &lf);
     FontInfo* font_info = find_font_by_logfont(&lf);
     if (!font_info) {
-        printf("'%S': not found\n", lf.lfFaceName);
+        wprintf(L"'%S': not found\n", lf.lfFaceName);
         return FALSE;
     }
     LONG lfHeight = lf.lfHeight;
 
-    printf("Using font: %S, %ld\n", font_info->wide_path, lfHeight);
+    wprintf(L"Using font: %S, %ld\n", font_info->wide_path, lfHeight);
 
     POINT Start, CurPos;
     LONGLONG RealXStart64, RealYStart64;
@@ -1362,7 +1359,7 @@ BOOL EmulatedExtTextOutW(
 
         // Added immediately after FT_Select_Size
         bool has_fnt_header = (FT_Get_WinFNT_Header(face, &WinFNT) == 0);
-        printf("first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
+        wprintf(L"first_char=0x%02X, last_char=0x%02X, default_char=0x%02X\n",
             WinFNT.first_char, WinFNT.last_char, WinFNT.default_char);
 
         if (has_fnt_header) {
@@ -1497,7 +1494,7 @@ BOOL EmulatedExtTextOutW(
                 glyph_index = byte_val - WinFNT.first_char + 1;
             }
 
-            printf("glyph_index=%u, byte_val=0x%02X, first_char=0x%02X, calc=%u\n",
+            wprintf(L"glyph_index=%u, byte_val=0x%02X, first_char=0x%02X, calc=%u\n",
                 glyph_index, byte_val, WinFNT.first_char,
                 byte_val - WinFNT.first_char);
         }
@@ -1516,16 +1513,16 @@ BOOL EmulatedExtTextOutW(
             continue;
 
         // Verify cmap
-        printf("num_charmaps=%d\n", face->num_charmaps);
+        wprintf(L"num_charmaps=%d\n", face->num_charmaps);
         for (int ci = 0; ci < face->num_charmaps; ++ci)
         {
-            printf("  charmap[%d]: platform=%d, encoding=%d, encoding_id=%d\n",
+            wprintf(L"  charmap[%d]: platform=%d, encoding=%d, encoding_id=%d\n",
                 ci,
                 face->charmaps[ci]->platform_id,
                 face->charmaps[ci]->encoding,
                 face->charmaps[ci]->encoding_id);
         }
-        printf("active charmap: platform=%d, encoding=%d\n",
+        wprintf(L"active charmap: platform=%d, encoding=%d\n",
             face->charmap ? face->charmap->platform_id : -1,
             face->charmap ? face->charmap->encoding    : -1);
 
@@ -1537,7 +1534,7 @@ BOOL EmulatedExtTextOutW(
         draw_glyph(hdc, &slot->bitmap, draw_x, draw_y,
                    fg_color, bg_color);
 
-        printf("glyph U+%04lX: bitmap=%dx%d, advance.x=%ld (>>6=%ld), bitmap_left=%d, bitmap_top=%d\n",
+        wprintf(L"glyph U+%04lX: bitmap=%dx%d, advance.x=%ld (>>6=%ld), bitmap_left=%d, bitmap_top=%d\n",
             codepoint,
             slot->bitmap.width, slot->bitmap.rows,
             slot->advance.x, slot->advance.x >> 6,
@@ -1618,6 +1615,8 @@ HBITMAP TestGdi(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
 
 bool TestEntry(PCWSTR font_name, int font_size, XFORM& xform)
 {
+    wprintf(L"%ls, %d: Testing\n", font_name, font_size);
+
     LOGFONTW lf;
     memset(&lf, 0, sizeof(lf));
     lf.lfHeight = font_size;
@@ -1629,20 +1628,20 @@ bool TestEntry(PCWSTR font_name, int font_size, XFORM& xform)
     HBITMAP hbm1 = TestFreeType(font_name, font_size, xform, hFont);
     HBITMAP hbm2 = TestGdi(font_name, font_size, xform, hFont);
     if (!hbm1)
-        printf("!hbm1\n");
+        wprintf(L"!hbm1\n");
     if (!hbm2)
-        printf("!hbm2\n");
+        wprintf(L"!hbm2\n");
 
     DeleteObject(hFont);
 
     BOOL ret = nearly_equal_bitmap(hbm1, hbm2, color1, color2);
     if (ret)
     {
-        printf("%S, %d: Success!\n", font_name, font_size);
+        wprintf(L"%ls, %d: Success!\n", font_name, font_size);
     }
     else
     {
-        printf("%S, %d: FAILED\n", font_name, font_size);
+        wprintf(L"%ls, %d: FAILED\n", font_name, font_size);
     }
 
     SaveBitmapToFile("a.bmp", hbm1);
@@ -1652,8 +1651,16 @@ bool TestEntry(PCWSTR font_name, int font_size, XFORM& xform)
     return ret;
 }
 
+#include <io.h>
+#include <fcntl.h>
+#include <locale.h>
+
 int wmain(int argc, wchar_t** wargv)
 {
+    SetConsoleOutputCP(CP_UTF8);
+    _setmode(_fileno(stdout), _O_U16TEXT);
+    setlocale(LC_ALL, "");
+
     PCWSTR font_name = FONT_NAME;
     int font_size = FONT_SIZE;
 
@@ -1687,7 +1694,7 @@ int main(void)
 {
     int argc;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    int ret =wmain(argc, wargv);
+    int ret = wmain(argc, wargv);
     LocalFree(wargv);
     return ret;
 }
