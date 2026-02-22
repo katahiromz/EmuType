@@ -1494,9 +1494,15 @@ BOOL EmulatedExtTextOutW(
         if (hAlign == TA_CENTER || hAlign == TA_RIGHT)
         {
             if (hAlign == TA_CENTER)
+            {
                 X -= strWidth / 2;
+                Y -= strHeight / 2;
+            }
             else // TA_RIGHT
+            {
                 X -= strWidth;
+                Y -= strHeight;
+            }
         }
 
         if (vAlign == TA_BASELINE)
@@ -1507,6 +1513,8 @@ BOOL EmulatedExtTextOutW(
         {
             baseline_y = Y - pixel_descent;
         }
+
+        wprintf("baseline_y: %d, strWidth: %d, strHeight: %d\n", baseline_y, strWidth, strHeight);
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
