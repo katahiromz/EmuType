@@ -1102,6 +1102,7 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
         {
             for (int col = 0; col < logical_w; ++col)
             {
+                // FreeType FT_PIXEL_MODE_LCD buffer stores subpixels in R,G,B order.
                 unsigned char R_sub = bitmap->buffer[row * src_pitch + col * 3 + 0];
                 unsigned char G_sub = bitmap->buffer[row * src_pitch + col * 3 + 1];
                 unsigned char B_sub = bitmap->buffer[row * src_pitch + col * 3 + 2];
@@ -1120,7 +1121,8 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                 int g = (GetGValue(fg_color) * G_sub + GetGValue(target_bg) * (255 - G_sub)) / 255;
                 int b = (GetBValue(fg_color) * B_sub + GetBValue(target_bg) * (255 - B_sub)) / 255;
 
-                pixels[row * logical_w + col] = ((DWORD)b << 16) | ((DWORD)g << 8) | (DWORD)r;
+                // DIB (BI_RGB 32bpp) pixel layout is 0x00RRGGBB, so R goes to bits 16-23.
+                pixels[row * logical_w + col] = ((DWORD)r << 16) | ((DWORD)g << 8) | (DWORD)b;
             }
         }
 
@@ -1168,7 +1170,8 @@ void draw_glyph(HDC hdc, FT_Bitmap* bitmap, int left, int top,
                 int r = (GetRValue(fg_color) * alpha + GetRValue(target_bg) * (255 - alpha)) / 255;
                 int g = (GetGValue(fg_color) * alpha + GetGValue(target_bg) * (255 - alpha)) / 255;
                 int b = (GetBValue(fg_color) * alpha + GetBValue(target_bg) * (255 - alpha)) / 255;
-                pixels[row * w + col] = ((DWORD)b << 16) | ((DWORD)g << 8) | (DWORD)r;
+                // DIB (BI_RGB 32bpp) pixel layout is 0x00RRGGBB, so R goes to bits 16-23.
+                pixels[row * w + col] = ((DWORD)r << 16) | ((DWORD)g << 8) | (DWORD)b;
             }
         }
 
@@ -1197,7 +1200,7 @@ static bool OpenFaceForDraw(
 
     if (is_raster)
     {
-        // ラスタフォントはキャッシュを経由せず直接開く
+        // ???X?^?t?H???g??L???b?V?????o?R????????J??
         if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, out_face) != 0)
             return false;
 
@@ -1228,17 +1231,17 @@ static bool OpenFaceForDraw(
     }
     else
     {
-        // アウトラインフォント: VDMXテーブルとWine互換フォールバックでppemを算出する。
-        // Step 1 - フォントテーブル読み取り用の一時フェイスを開く
+        // ?A?E?g???C???t?H???g: VDMX?e?[?u????Wine????t?H?[???o?b?N??ppem???Z?o????B
+        // Step 1 - ?t?H???g?e?[?u???????p????t?F?C?X???J??
         FT_Face tmp_face = NULL;
         if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, &tmp_face) != 0)
             return false;
 
-        // Step 2 - まずVDMXを試みる（一般的なサイズでは正確なWindowsメトリクスが得られる）
+        // Step 2 - ???VDMX???????i???I??T?C?Y?????m??Windows???g???N?X????????j
         VdmxEntry vdmx = {};
         bool have_vdmx = load_VDMX(tmp_face, lfHeight, &vdmx);
 
-        // Step 3 - ppemを計算する
+        // Step 3 - ppem???v?Z????
         int ppem;
         if (have_vdmx)
             ppem = vdmx.ppem;
@@ -1247,21 +1250,21 @@ static bool OpenFaceForDraw(
 
         FT_Done_Face(tmp_face);
 
-        // Step 4 - フェイスを直接開いてサイズを設定する（キャッシュなし）
+        // Step 4 - ?t?F?C?X???J????T?C?Y??????i?L???b?V??????j
         if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, out_face) != 0)
             return false;
         FT_Set_Pixel_Sizes(*out_face, 0, ppem);
 
-        // Step 5 - ピクセルアセント（セル上端からベースラインまでの距離）を決定する
+        // Step 5 - ?s?N?Z???A?Z???g?i?Z????[????x?[?X???C??????????j????????
         if (have_vdmx)
         {
-            // VDMXが正確な整数ピクセル値を提供する。
+            // VDMX?????m??????s?N?Z???l??????B
             *out_pixel_ascent = vdmx.yMax;
         }
         else
         {
-            // VDMX なし: 算出済みの em_scale で usWinAscent をスケールする。
-            // em_scale は 16.16 固定小数点: ppem / units_per_EM。
+            // VDMX ???: ?Z?o???? em_scale ?? usWinAscent ???X?P?[??????B
+            // em_scale ?? 16.16 ??????_: ppem / units_per_EM?B
             TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(*out_face, FT_SFNT_OS2);
             if (os2 && (os2->usWinAscent != 0 || os2->usWinDescent != 0))
             {
