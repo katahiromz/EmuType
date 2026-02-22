@@ -1488,7 +1488,7 @@ BOOL EmulatedExtTextOutW(
     bool has_fnt_header = false;
     int pixel_ascent, pixel_descent, baseline_y;
 
-    if (!OpenFaceForDraw(font_info, lfHeight, Y, &face,
+    if (!OpenFaceForDraw(font_info, lfHeight, Start.y, &face,
                          &WinFNT, &has_fnt_header,
                          &pixel_ascent, &pixel_descent, &baseline_y))
         return FALSE;
@@ -1537,15 +1537,19 @@ BOOL EmulatedExtTextOutW(
                 X -= strWidth;
                 Y -= strHeight;
             }
+
+            Start.x = X;
+            Start.y = Y;
+            LPtoDP(hdc, &Start, 1);
         }
 
         if (vAlign == TA_BASELINE)
         {
-            baseline_y = Y;
+            baseline_y = Start.y - pixel_descent;;
         }
         else if (vAlign == TA_BOTTOM)
         {
-            baseline_y = Y - pixel_descent;
+            baseline_y = Start.y;
         }
 
         wprintf(L"baseline_y: %d, strWidth: %d, strHeight: %d\n", baseline_y, strWidth, strHeight);
