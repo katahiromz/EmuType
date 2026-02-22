@@ -1201,7 +1201,6 @@ static bool OpenFaceForDraw(
 
     if (is_raster)
     {
-        // ???X?^?t?H???g??L???b?V?????o?R????????J??
         if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, out_face) != 0)
             return false;
 
@@ -1237,17 +1236,13 @@ static bool OpenFaceForDraw(
     }
     else
     {
-        // ?A?E?g???C???t?H???g: VDMX?e?[?u????Wine????t?H?[???o?b?N??ppem???Z?o????B
-        // Step 1 - ?t?H???g?e?[?u???????p????t?F?C?X???J??
         FT_Face tmp_face = NULL;
         if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, &tmp_face) != 0)
             return false;
 
-        // Step 2 - ???VDMX???????i???I??T?C?Y?????m??Windows???g???N?X????????j
         VdmxEntry vdmx = {};
         bool have_vdmx = load_VDMX(tmp_face, lfHeight, &vdmx);
 
-        // Step 3 - ppem???v?Z????
         int ppem;
         if (have_vdmx)
             ppem = vdmx.ppem;
@@ -1256,22 +1251,17 @@ static bool OpenFaceForDraw(
 
         FT_Done_Face(tmp_face);
 
-        // Step 4 - ?t?F?C?X???J????T?C?Y??????i?L???b?V??????j
         if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, out_face) != 0)
             return false;
         FT_Set_Pixel_Sizes(*out_face, 0, ppem);
 
-        // Step 5 - ?s?N?Z???A?Z???g?i?Z????[????x?[?X???C??????????j????????
         if (have_vdmx)
         {
-            // VDMX?????m??????s?N?Z???l??????B
             *out_pixel_ascent  = vdmx.yMax;
-            *out_pixel_descent = -vdmx.yMin; // yMin は負値
+            *out_pixel_descent = -vdmx.yMin;
         }
         else
         {
-            // VDMX ???: ?Z?o???? em_scale ?? usWinAscent ???X?P?[??????B
-            // em_scale ?? 16.16 ??????_: ppem / units_per_EM?B
             TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(*out_face, FT_SFNT_OS2);
             if (os2 && (os2->usWinAscent != 0 || os2->usWinDescent != 0))
             {
@@ -1294,14 +1284,9 @@ static bool OpenFaceForDraw(
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// CalcStringWidthFT
-// FreeType を使って lpString の描画幅 (ピクセル単位) を計算する。
-// lpDx が指定されている場合はその合計値を返す。
-// ---------------------------------------------------------------------------
 static int CalcStringWidthFT(
     FontInfo*    font_info,
-    FT_Face      face,           // 既に pixel size が設定済みの FT_Face
+    FT_Face      face,
     bool         is_raster,
     const WCHAR* lpString,
     INT          Count,
@@ -1310,7 +1295,6 @@ static int CalcStringWidthFT(
     if (!lpString || Count <= 0)
         return 0;
 
-    // lpDx が指定されていればその合計が幅
     if (lpDx)
     {
         int total = 0;
@@ -1355,7 +1339,6 @@ static int CalcStringWidthFT(
             if (mblen != 1) continue;
             unsigned char byte_val = (unsigned char)mb[0];
             FT_WinFNT_HeaderRec WinFNT;
-            // face から WinFNT ヘッダを取得して範囲チェック
             if (FT_Get_WinFNT_Header(face, &WinFNT) == 0)
             {
                 if (byte_val < WinFNT.first_char || byte_val > WinFNT.last_char)
@@ -1493,13 +1476,9 @@ BOOL EmulatedExtTextOutW(
         load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD | FT_LOAD_FORCE_AUTOHINT;
     }
 
-    // -----------------------------------------------------------------------
-    // GetTextAlign によるアライメント処理
-    // -----------------------------------------------------------------------
     {
         UINT textAlign = GetTextAlign(hdc);
 
-        // --- 水平アライメント (TA_LEFT / TA_CENTER / TA_RIGHT) ---
         UINT hAlign = textAlign & (TA_LEFT | TA_CENTER | TA_RIGHT);
         if (hAlign == TA_CENTER || hAlign == TA_RIGHT)
         {
@@ -1511,24 +1490,15 @@ BOOL EmulatedExtTextOutW(
                 X -= strWidth;
         }
 
-        // --- 垂直アライメント (TA_TOP / TA_BASELINE / TA_BOTTOM) ---
-        // OpenFaceForDraw は Y をセル上端と仮定して baseline_y を計算済み (TA_TOP 相当)。
-        // TA_BASELINE / TA_BOTTOM の場合は Y の解釈が異なるため baseline_y を再計算する。
-        //
-        //   TA_TOP      : Y = セル上端  → baseline_y = Y + ascent   (既定)
-        //   TA_BASELINE : Y = ベースライン → baseline_y = Y
-        //   TA_BOTTOM   : Y = セル下端  → baseline_y = Y - descent
-        //
         UINT vAlign = textAlign & (TA_TOP | TA_BASELINE | TA_BOTTOM);
         if (vAlign == TA_BASELINE)
         {
-            baseline_y = Y;                    // Y 自体がベースライン
+            baseline_y = Y;
         }
         else if (vAlign == TA_BOTTOM)
         {
-            baseline_y = Y - pixel_descent;    // セル下端からアセントぶん上
+            baseline_y = Y - pixel_descent;
         }
-        // TA_TOP は OpenFaceForDraw の計算 (Y + pixel_ascent) がそのまま正しい
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
