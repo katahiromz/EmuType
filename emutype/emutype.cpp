@@ -8,6 +8,7 @@
 #include <string>
 #include <cstdlib>
 #include <cstdio>
+#include <strsafe.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -30,14 +31,14 @@ const int WIDTH  = 300;
 const int HEIGHT = 100;
 const COLORREF BG = RGB(255, 255, 0);
 const COLORREF FG = RGB(0,   0,   0);
-const char* FONT_NAME = "Tahoma";
+PCWSTR FONT_NAME = L"Tahoma";
 const LONG FONT_SIZE = 30;
 const WCHAR* text = L"EmuType Draw";
 const COLORREF color1 = RGB(0, 0, 0);
 const COLORREF color2 = RGB(255, 255, 0);
 
 // Using a different registry key for this test.
-const char* reg_key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
+const WCHAR* reg_key = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
 
 /*
  *  For TranslateCharsetInfo
@@ -86,10 +87,11 @@ static const CHARSETINFO g_FontTci[MAXTCIINDEX] =
 };
 
 struct FontInfo {
-    std::string path; // ANSI
+    WCHAR wide_path[MAX_PATH];
+    CHAR ansi_path[MAX_PATH];
     FT_Long face_index;
-    std::string family_name; // UTF-8
-    std::string english_name; // UTF-8
+    std::wstring family_name;
+    std::wstring english_name;
     FT_Long style_flags; // See FT_Face.style_flags
     BYTE charset;
     INT raster_height;
@@ -97,28 +99,51 @@ struct FontInfo {
 };
 std::vector<FontInfo*> registered_fonts;
 
-char fonts_dir[MAX_PATH];
+WCHAR fonts_dir[MAX_PATH];
 FT_Library library;
 FTC_Manager cache_manager;
 
 HBITMAP hbmMask_cache = NULL;
 int hbmMask_cache_w = 0, hbmMask_cache_h = 0;
 
-// Helper to determine font type
-static bool is_raster_font(const std::string& path)
+HRESULT
+_StringCchWideFromAnsi(UINT codepage, PWSTR wide, INT cchWide, PCSTR ansi)
 {
-    LPCSTR ext = PathFindExtensionA(path.c_str());
-    return lstrcmpiA(ext, ".fon") == 0 || lstrcmpiA(ext, ".fnt") == 0;
+    if (!wide || cchWide <= 0)
+        return E_INVALIDARG;
+
+    MultiByteToWideChar(codepage, 0, ansi, -1, wide, cchWide);
+    wide[cchWide - 1] = UNICODE_NULL;
+    return S_OK;
 }
 
-bool is_supported_font(const char *filename) {
-    LPCSTR pchDotExt = PathFindExtensionA(filename);
-    return lstrcmpiA(pchDotExt, ".ttf") == 0 ||
-           lstrcmpiA(pchDotExt, ".ttc") == 0 ||
-           lstrcmpiA(pchDotExt, ".otf") == 0 ||
-           lstrcmpiA(pchDotExt, ".otc") == 0 ||
-           lstrcmpiA(pchDotExt, ".fon") == 0 ||
-           lstrcmpiA(pchDotExt, ".fnt") == 0;
+HRESULT
+_StringCchAnsiFromWide(UINT codepage, PSTR ansi, INT cchAnsi, PCWSTR wide)
+{
+    if (!ansi || cchAnsi <= 0)
+        return E_INVALIDARG;
+
+    WideCharToMultiByte(codepage, 0, wide, -1, ansi, cchAnsi, NULL, NULL);
+    ansi[cchAnsi - 1] = ANSI_NULL;
+    return S_OK;
+}
+
+
+// Helper to determine font type
+static bool is_raster_font(const std::wstring& path)
+{
+    LPCWSTR ext = PathFindExtensionW(path.c_str());
+    return lstrcmpiW(ext, L".fon") == 0 || lstrcmpiW(ext, L".fnt") == 0;
+}
+
+bool is_supported_font(const WCHAR *filename) {
+    LPCWSTR pchDotExt = PathFindExtensionW(filename);
+    return lstrcmpiW(pchDotExt, L".ttf") == 0 ||
+           lstrcmpiW(pchDotExt, L".ttc") == 0 ||
+           lstrcmpiW(pchDotExt, L".otf") == 0 ||
+           lstrcmpiW(pchDotExt, L".otc") == 0 ||
+           lstrcmpiW(pchDotExt, L".fon") == 0 ||
+           lstrcmpiW(pchDotExt, L".fnt") == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +283,6 @@ static bool load_VDMX(FT_Face face, int lfHeight, VdmxEntry* out)
             }
             if (cell > lfHeight)
             {
-                // Overshot ? use the previous smaller entry if it exists
                 if (prev_ppem == 0) return false;
                 out->ppem = prev_ppem;
                 out->yMax = prev_yMax;
@@ -353,51 +377,45 @@ requester(FTC_FaceID  face_id,
           FT_Face*    aface)
 {
     FontInfo* info = static_cast<FontInfo*>(face_id);
-    return FT_New_Face(lib, info->path.c_str(), info->face_index, aface);
+    return FT_New_Face(lib, info->ansi_path, info->face_index, aface);
 }
 
-static std::string get_family_name(FT_Face face, bool localized)
+static std::wstring get_family_name(FT_Face face, FT_UShort name_id, bool localized, PCWSTR default_value)
 {
     if (!FT_IS_SFNT(face))
-        return face->family_name ? face->family_name : "";
+        return default_value;
 
     FT_UInt count = FT_Get_Sfnt_Name_Count(face);
 
     int best_priority = -1;
-    std::string best_name;
+    std::wstring best_name;
 
     for (FT_UInt i = 0; i < count; ++i)
     {
         FT_SfntName sname;
         if (FT_Get_Sfnt_Name(face, i, &sname) != 0)
             continue;
-        if (sname.name_id != TT_NAME_ID_FONT_FAMILY)
+        if (sname.name_id != name_id)
             continue;
 
         int priority = -1;
-        std::string name;
+        std::wstring name;
 
         if (sname.platform_id == TT_PLATFORM_MICROSOFT &&
             sname.encoding_id == TT_MS_ID_UNICODE_CS)
         {
-            int wlen = static_cast<int>(sname.string_len) / 2;
-            std::vector<wchar_t> wbuf(wlen + 1, 0);
-            for (int j = 0; j < wlen; ++j)
-            {
-                wbuf[j] = static_cast<wchar_t>(
-                    (sname.string[j * 2] << 8) | sname.string[j * 2 + 1]);
+            CHAR szAnsi[MAX_PATH];
+            for (size_t ib = 0; ib < sname.string_len && ib < MAX_PATH - 1; ib += 2) {
+                CHAR chTemp = szAnsi[ib];
+                szAnsi[ib] = szAnsi[ib + 1];
+                szAnsi[ib + 1] = chTemp;
             }
-            int mblen = WideCharToMultiByte(CP_UTF8, 0,
-                                            &wbuf[0], wlen,
-                                            NULL, 0, NULL, NULL);
-            if (mblen > 0)
-            {
-                std::string mbstr(mblen, '\0');
-                WideCharToMultiByte(CP_UTF8, 0,
-                                    &wbuf[0], wlen,
-                                    &mbstr[0], mblen, NULL, NULL);
-                name = mbstr;
-            }
+            szAnsi[sname.string_len] = ANSI_NULL;
+
+            WCHAR szWide[MAX_PATH];
+            _StringCchWideFromAnsi(CP_ACP, szWide, _countof(szWide), szAnsi);
+
+            name = szWide;
 
             if (sname.language_id == GetUserDefaultLangID() && localized)
                 priority = 3;
@@ -410,7 +428,10 @@ static std::string get_family_name(FT_Face face, bool localized)
                  sname.encoding_id == TT_MAC_ID_ROMAN)
         {
             // Mac Roman: usable as-is within the ASCII range
-            name = std::string(reinterpret_cast<const char*>(sname.string), sname.string_len);
+            std::string aname = std::string(reinterpret_cast<const char*>(sname.string), sname.string_len);
+            WCHAR szWide[MAX_PATH];
+            _StringCchWideFromAnsi(CP_ACP, szWide, _countof(szWide), aname.c_str());
+            name = szWide;
             priority = 0;
         }
 
@@ -424,8 +445,7 @@ static std::string get_family_name(FT_Face face, bool localized)
     if (!best_name.empty())
         return best_name;
 
-    // Fallback
-    return face->family_name ? face->family_name : "";
+    return default_value;
 }
 
 static std::string get_style_name(FT_Face face, bool localized)
@@ -548,14 +568,15 @@ OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
     if (!FT_IS_SFNT(face))
         return NULL;
 
-    // 1. Prepare each string
-    std::string family_utf8 = get_family_name(face, true);
-    std::string style_utf8  = get_style_name(face, true);
-    std::string face_utf8   = family_utf8 + (style_utf8.empty() ? "" : " " + style_utf8);
-    std::wstring wFamily = utf8_to_wide(family_utf8);
-    std::wstring wFace   = utf8_to_wide(face_utf8);
-    std::wstring wStyle  = utf8_to_wide(style_utf8);
-    std::wstring wFull   = wFace; 
+    WCHAR szFamilyName[MAX_PATH];
+    _StringCchWideFromAnsi(CP_ACP, szFamilyName, _countof(szFamilyName), face->family_name);
+    WCHAR szStyleName[MAX_PATH];
+    _StringCchWideFromAnsi(CP_ACP, szStyleName, _countof(szStyleName), face->style_name);
+
+    std::wstring wFamily = get_family_name(face, TT_NAME_ID_FONT_FAMILY, true, szFamilyName);
+    std::wstring wStyle  = get_family_name(face, TT_NAME_ID_FONT_SUBFAMILY, true, szStyleName);
+    std::wstring wFace   = wFamily + (wStyle.size() ? L"" : L" " + wStyle);
+    std::wstring wFull = get_family_name(face, TT_NAME_ID_FULL_NAME, true, szFamilyName);
 
     size_t strings_size = (wFamily.length() + 1 + wFace.length() + 1 +
                            wStyle.length() + 1 + wFull.length() + 1) * sizeof(WCHAR);
@@ -647,11 +668,14 @@ OUTLINETEXTMETRICW* get_outline_text_metrics(FT_Face face, BYTE charset) {
     return potm;
 }
 
-bool load_font(const char *path, int face_index)
+bool load_font(PCWSTR path, int face_index)
 {
+    CHAR ansi_path[MAX_PATH];
+    _StringCchAnsiFromWide(CP_ACP, ansi_path, _countof(ansi_path), path);
+
     int iStart = (face_index == -1) ? 0 : face_index;
     FT_Face face;
-    FT_Error error = FT_New_Face(library, path, iStart, &face);
+    FT_Error error = FT_New_Face(library, ansi_path, iStart, &face);
     if (error)
         return false;
 
@@ -680,6 +704,9 @@ bool load_font(const char *path, int face_index)
     if (charsets.empty())
         charsets.push_back(DEFAULT_CHARSET);
 
+    WCHAR szFamilyName[MAX_PATH];
+    _StringCchWideFromAnsi(CP_ACP, szFamilyName, _countof(szFamilyName), face->family_name);
+
     for (BYTE cs : charsets) {
         if (face->num_fixed_sizes > 0) {
             for (int i = 0; i < face->num_fixed_sizes; ++i)
@@ -693,10 +720,12 @@ bool load_font(const char *path, int face_index)
                     raster_internal_leading = WinFNT.internal_leading;
                 }
                 FontInfo* info = new FontInfo();
-                info->path = path;
+                _StringCchAnsiFromWide(CP_ACP, info->ansi_path, _countof(info->ansi_path), path);
+                StringCchCopyW(info->wide_path, _countof(info->wide_path), path);
+
                 info->face_index = iStart;
-                info->family_name = get_family_name(face, true);
-                info->english_name = get_family_name(face, false);
+                info->family_name = get_family_name(face, TT_NAME_ID_FONT_FAMILY, true, szFamilyName);
+                info->english_name = get_family_name(face, TT_NAME_ID_FONT_FAMILY, false, szFamilyName);
                 info->style_flags = face->style_flags;
                 info->charset = cs;
                 info->raster_height = raster_height;
@@ -705,10 +734,11 @@ bool load_font(const char *path, int face_index)
             }
         } else {
             FontInfo* info = new FontInfo();
-            info->path = path;
+            _StringCchAnsiFromWide(CP_ACP, info->ansi_path, _countof(info->ansi_path), path);
+            StringCchCopyW(info->wide_path, _countof(info->wide_path), path);
             info->face_index = iStart;
-            info->family_name = get_family_name(face, true);
-            info->english_name = get_family_name(face, false);
+            info->family_name = get_family_name(face, TT_NAME_ID_FONT_FAMILY, true, szFamilyName);
+            info->english_name = get_family_name(face, TT_NAME_ID_FONT_FAMILY, false, szFamilyName);
             info->style_flags = face->style_flags;
             info->charset = cs;
             info->raster_height = raster_height;
@@ -741,16 +771,16 @@ void free_fonts(void)
 }
 
 // Return the list of available sizes for a raster font as a string like "8,10,12"
-static std::string get_raster_sizes(FT_Face face)
+static std::wstring get_raster_sizes(FT_Face face)
 {
-    std::string result;
+    std::wstring result;
     for (int i = 0; i < face->num_fixed_sizes; ++i)
     {
         if (!result.empty())
-            result += ",";
-        char buf[16];
+            result += L",";
+        WCHAR buf[16];
         // fixed_sizes[i].height is in pixels
-        _snprintf(buf, sizeof(buf), "%d", static_cast<int>(face->available_sizes[i].height));
+        StringCchPrintfW(buf, _countof(buf), L"%d", static_cast<int>(face->available_sizes[i].height));
         result += buf;
     }
     return result;
@@ -759,32 +789,31 @@ static std::string get_raster_sizes(FT_Face face)
 // Generate a registry value name by grouping FontInfos from the same file.
 // TrueType / OpenType: "MS Gothic & MS UI Gothic & MS PGothic (TrueType)"
 // Raster:              "MS Sans Serif 8,10,12,14,18,24"
-static std::string make_registry_value_name(
+static std::wstring make_registry_value_name(
     const std::vector<FontInfo*>& group, FT_Face first_face)
 {
-    bool raster = is_raster_font(group[0]->path);
+    bool raster = is_raster_font(group[0]->wide_path);
     if (raster)
     {
         // Raster fonts include a size list (Windows-compatible)
-        std::string sizes = get_raster_sizes(first_face);
-        std::string name = group[0]->family_name;
+        std::wstring sizes = get_raster_sizes(first_face);
+        std::wstring name = group[0]->family_name;
         if (!sizes.empty())
-            name += " " + sizes;
+            name += L" " + sizes;
         return name;
     }
 
     // Outline fonts: concatenate all family_names in the group with " & "
     // (duplicates are removed)
-    std::vector<std::string> names;
+    std::vector<std::wstring> names;
     for (std::vector<FontInfo*>::const_iterator it = group.begin();
          it != group.end(); ++it)
     {
         const FontInfo* info = *it;
         bool found = false;
-        for (std::vector<std::string>::const_iterator ni = names.begin();
-             ni != names.end(); ++ni)
+        for (std::vector<std::wstring>::const_iterator ni = names.begin(); ni != names.end(); ++ni)
         {
-            if (lstrcmpiA(ni->c_str(), info->family_name.c_str()) == 0)
+            if (lstrcmpiW(ni->c_str(), info->family_name.c_str()) == 0)
             {
                 found = true;
                 break;
@@ -794,14 +823,14 @@ static std::string make_registry_value_name(
             names.push_back(info->family_name);
     }
 
-    std::string value_name;
+    std::wstring value_name;
     for (size_t i = 0; i < names.size(); ++i)
     {
-        if (i > 0) value_name += " & ";
+        if (i > 0) value_name += L" & ";
         value_name += names[i];
     }
 
-    value_name += " (TrueType)";
+    value_name += L" (TrueType)";
     return value_name;
 }
 
@@ -817,7 +846,7 @@ void write_fonts_to_registry(HKEY hKey)
     }
 
     // Group by path
-    typedef std::pair<std::string, std::vector<FontInfo*> > FontGroup;
+    typedef std::pair<std::wstring, std::vector<FontInfo*> > FontGroup;
     std::vector<FontGroup> groups;
 
     for (std::vector<FontInfo*>::iterator it = registered_fonts.begin();
@@ -825,10 +854,9 @@ void write_fonts_to_registry(HKEY hKey)
     {
         FontInfo* info = *it;
         bool found = false;
-        for (std::vector<FontGroup>::iterator gi = groups.begin();
-             gi != groups.end(); ++gi)
+        for (std::vector<FontGroup>::iterator gi = groups.begin(); gi != groups.end(); ++gi)
         {
-            if (lstrcmpiA(gi->first.c_str(), info->path.c_str()) == 0)
+            if (lstrcmpiW(gi->first.c_str(), info->wide_path) == 0)
             {
                 gi->second.push_back(info);
                 found = true;
@@ -837,69 +865,52 @@ void write_fonts_to_registry(HKEY hKey)
         }
         if (!found)
         {
-            groups.push_back(FontGroup(info->path, std::vector<FontInfo*>(1, info)));
+            groups.push_back(FontGroup(info->wide_path, std::vector<FontInfo*>(1, info)));
         }
     }
 
-    for (std::vector<FontGroup>::iterator gi = groups.begin();
-         gi != groups.end(); ++gi)
+    for (std::vector<FontGroup>::iterator gi = groups.begin(); gi != groups.end(); ++gi)
     {
-        const std::string& path = gi->first;
+        const std::wstring& path = gi->first;
         const std::vector<FontInfo*>& group = gi->second;
+
+        char ansi_path[MAX_PATH];
+        _StringCchAnsiFromWide(CP_ACP, ansi_path, _countof(ansi_path), path.c_str());
 
         // Temporarily open the face to generate the value name
         FT_Face first_face;
-        if (FT_New_Face(library, path.c_str(), group[0]->face_index, &first_face) != 0)
+        if (FT_New_Face(library, ansi_path, group[0]->face_index, &first_face) != 0)
             continue;
 
-        std::string value_name = make_registry_value_name(group, first_face);
+        std::wstring value_name = make_registry_value_name(group, first_face);
         FT_Done_Face(first_face);
 
         // Value data: filename only (matching the Windows registry format)
-        char filename[MAX_PATH];
+        WCHAR filename[MAX_PATH];
         if (path.find(fonts_dir) == 0)
-            lstrcpynA(filename, PathFindFileNameA(path.c_str()), MAX_PATH);
+            lstrcpynW(filename, PathFindFileNameW(path.c_str()), _countof(filename));
         else
-            lstrcpynA(filename, path.c_str(), MAX_PATH);
+            lstrcpynW(filename, path.c_str(), _countof(filename));
 
-        // Convert value_name (UTF-8) to UTF-16
-        int wname_len = MultiByteToWideChar(CP_UTF8, 0,
-                                            value_name.c_str(), -1,
-                                            NULL, 0);
-        std::vector<WCHAR> wname(wname_len);
-        MultiByteToWideChar(CP_UTF8, 0,
-                            value_name.c_str(), -1,
-                            &wname[0], wname_len);
-
-        // Convert filename (system default ACP) to UTF-16
-        int wdata_len = MultiByteToWideChar(CP_ACP, 0,
-                                            filename, -1,
-                                            NULL, 0);
-        std::vector<WCHAR> wdata(wdata_len);
-        MultiByteToWideChar(CP_ACP, 0,
-                            filename, -1,
-                            &wdata[0], wdata_len);
-
-        RegSetValueExW(hKey, &wname[0], 0, REG_SZ,
-                       reinterpret_cast<const BYTE*>(&wdata[0]),
-                       static_cast<DWORD>(wdata_len * sizeof(WCHAR)));
+        DWORD cbValue = (lstrlenW(filename) + 1) * sizeof(WCHAR);
+        RegSetValueExW(hKey, value_name.c_str(), 0, REG_SZ, (PBYTE)filename, cbValue);
     }
 }
 
 void read_fonts_from_registry(HKEY hKey)
 {
     DWORD index = 0;
-    char value_name[512];
-    char value_data[MAX_PATH];
+    WCHAR value_name[512];
+    WCHAR value_data[MAX_PATH];
     DWORD name_size, data_size, type;
 
     for (;;)
     {
         name_size = sizeof(value_name);
         data_size = sizeof(value_data);
-        LSTATUS status = RegEnumValueA(hKey, index++, value_name, &name_size,
+        LSTATUS status = RegEnumValueW(hKey, index++, value_name, &name_size,
                                        NULL, &type,
-                                       reinterpret_cast<LPBYTE>(value_data),
+                                       reinterpret_cast<PBYTE>(value_data),
                                        &data_size);
         if (status == ERROR_NO_MORE_ITEMS)
             break;
@@ -907,19 +918,19 @@ void read_fonts_from_registry(HKEY hKey)
             continue;
 
         // Convert to full path
-        char full_path[MAX_PATH];
-        if (PathIsRelativeA(value_data))
+        WCHAR full_path[MAX_PATH];
+        if (PathIsRelativeW(value_data))
         {
-            lstrcpynA(full_path, fonts_dir, MAX_PATH);
-            PathAppendA(full_path, value_data);
+            lstrcpynW(full_path, fonts_dir, _countof(full_path));
+            PathAppendW(full_path, value_data);
         }
         else
         {
-            lstrcpynA(full_path, value_data, MAX_PATH);
+            lstrcpynW(full_path, value_data, _countof(full_path));
         }
 
         // Skip if the file does not exist
-        if (!PathFileExistsA(full_path))
+        if (!PathFileExistsW(full_path))
             continue;
 
         // Load all faces with FreeType (same logic as load_font with -1)
@@ -929,32 +940,32 @@ void read_fonts_from_registry(HKEY hKey)
 
 void load_from_fonts_folder()
 {
-    char path[MAX_PATH];
-    lstrcpynA(path, fonts_dir, MAX_PATH);
-    PathAppendA(path, "*.*");
+    WCHAR path[MAX_PATH];
+    lstrcpynW(path, fonts_dir, MAX_PATH);
+    PathAppendW(path, L"*.*");
 
-    WIN32_FIND_DATAA find;
-    HANDLE hFind = FindFirstFileA(path, &find);
+    WIN32_FIND_DATAW find;
+    HANDLE hFind = FindFirstFileW(path, &find);
     if (hFind != INVALID_HANDLE_VALUE)
     {
         do
         {
-            if (lstrcmpA(find.cFileName, ".") == 0 || lstrcmpA(find.cFileName, "..") == 0)
+            if (lstrcmpW(find.cFileName, L".") == 0 || lstrcmpW(find.cFileName, L"..") == 0)
                 continue;
 
             if (is_supported_font(find.cFileName)) {
-                lstrcpynA(path, fonts_dir, MAX_PATH);
-                PathAppendA(path, find.cFileName);
+                lstrcpynW(path, fonts_dir, _countof(path));
+                PathAppendW(path, find.cFileName);
                 load_font(path, -1);
             }
-        } while (FindNextFileA(hFind, &find));
+        } while (FindNextFileW(hFind, &find));
         FindClose(hFind);
     }
 }
 
 BOOL InitFontSupport(VOID)
 {
-    SHGetSpecialFolderPathA(NULL, fonts_dir, CSIDL_FONTS, FALSE);
+    SHGetSpecialFolderPathW(NULL, fonts_dir, CSIDL_FONTS, FALSE);
 
     FT_Error error = FT_Init_FreeType(&library);
     if (error) {
@@ -971,10 +982,10 @@ BOOL InitFontSupport(VOID)
     }
 
     HKEY hKey;
-    error = RegCreateKeyExA(HKEY_CURRENT_USER, reg_key, 0, NULL, 0,
+    error = RegCreateKeyExW(HKEY_CURRENT_USER, reg_key, 0, NULL, 0,
                             KEY_ALL_ACCESS, NULL, &hKey, NULL);
     if (!error) {
-        error = RegEnumValueA(hKey, 0, NULL, NULL, NULL, NULL, NULL, NULL);
+        error = RegEnumValueW(hKey, 0, NULL, NULL, NULL, NULL, NULL, NULL);
         if (error) {
             load_from_fonts_folder();
             //write_fonts_to_registry(hKey);
@@ -996,9 +1007,9 @@ VOID FreeFontSupport(VOID)
     DeleteObject(hbmMask_cache);
 }
 
-FontInfo* find_font_by_logfont(const LOGFONTA *plf)
+FontInfo* find_font_by_logfont(const LOGFONTW *plf)
 {
-    const char* font_name = plf->lfFaceName;
+    PCWSTR font_name = plf->lfFaceName;
     FT_Byte preferred_charset = plf->lfCharSet;
     int preferred_height = plf->lfHeight;
 
@@ -1013,10 +1024,10 @@ FontInfo* find_font_by_logfont(const LOGFONTA *plf)
 
     for (auto* font_info : registered_fonts)
     {
-        if (lstrcmpiA(font_info->family_name.c_str(), font_name) != 0)
+        if (lstrcmpiW(font_info->family_name.c_str(), font_name) != 0)
             continue;
 
-        if (!is_raster_font(font_info->path))
+        if (!is_raster_font(font_info->wide_path))
         {
             if (font_info->style_flags == style_flags)
                 return font_info;
@@ -1027,7 +1038,7 @@ FontInfo* find_font_by_logfont(const LOGFONTA *plf)
         if (preferred_charset != DEFAULT_CHARSET && font_info->charset != preferred_charset)
             charset_penalty += 10000;
 
-        if (is_raster_font(font_info->path))
+        if (is_raster_font(font_info->wide_path))
         {
             int size;
             if (preferred_height < 0)
@@ -1048,14 +1059,15 @@ FontInfo* find_font_by_logfont(const LOGFONTA *plf)
         }
     }
 
-    if (best) return best;
+    if (best)
+        return best;
 
     // If style_flags do not match, search again by name only
     for (std::vector<FontInfo*>::iterator it = registered_fonts.begin();
          it != registered_fonts.end(); ++it)
     {
         FontInfo* font_info = *it;
-        if (lstrcmpiA(font_info->family_name.c_str(), font_name) == 0)
+        if (lstrcmpiW(font_info->family_name.c_str(), font_name) == 0)
             return font_info;
     }
 
@@ -1250,16 +1262,16 @@ BOOL EmulatedExtTextOutW(
 {
     HFONT hFont = (HFONT)GetCurrentObject(hdc, OBJ_FONT);
 
-    LOGFONTA lf;
-    GetObjectA(hFont, sizeof(lf), &lf);
+    LOGFONTW lf;
+    GetObjectW(hFont, sizeof(lf), &lf);
     FontInfo* font_info = find_font_by_logfont(&lf);
     if (!font_info) {
-        printf("'%s': not found\n", lf.lfFaceName);
+        printf("'%S': not found\n", lf.lfFaceName);
         return FALSE;
     }
     LONG lfHeight = lf.lfHeight;
 
-    printf("Using font: %s, %ld\n", font_info->path.c_str(), lfHeight);
+    printf("Using font: %S, %ld\n", font_info->wide_path, lfHeight);
 
     POINT Start, CurPos;
     LONGLONG RealXStart64, RealYStart64;
@@ -1317,7 +1329,7 @@ BOOL EmulatedExtTextOutW(
         }
     }
 
-    bool is_raster = is_raster_font(font_info->path);
+    bool is_raster = is_raster_font(font_info->wide_path);
     FT_Face face = NULL;
     bool face_needs_done = false;
 
@@ -1328,8 +1340,7 @@ BOOL EmulatedExtTextOutW(
     if (is_raster)
     {
         // Raster fonts are opened directly without going through the cache
-        if (FT_New_Face(library, font_info->path.c_str(),
-                        font_info->face_index, &face) != 0)
+        if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, &face) != 0)
             return FALSE;
         face_needs_done = true;
 
@@ -1367,8 +1378,7 @@ BOOL EmulatedExtTextOutW(
         // Step 1 - open a temporary face to read font tables (calc_ppem_for_height
         //          and load_VDMX need the raw FT_Face, not the cached FT_Size).
         FT_Face tmp_face = NULL;
-        if (FT_New_Face(library, font_info->path.c_str(),
-                        font_info->face_index, &tmp_face) != 0)
+        if (FT_New_Face(library, font_info->ansi_path, font_info->face_index, &tmp_face) != 0)
             return FALSE;
 
         // Step 2 - try VDMX first (exact Windows metrics for common sizes)
@@ -1548,7 +1558,7 @@ BOOL EmulatedExtTextOutW(
     return TRUE;
 }
 
-HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform, HFONT hFont)
+HBITMAP TestFreeType(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
 {
     HDC hScreenDC = GetDC(NULL);
     HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
@@ -1577,7 +1587,7 @@ HBITMAP TestFreeType(const char* font_name, int font_size, XFORM& xform, HFONT h
     return hbm;
 }
 
-HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform, HFONT hFont)
+HBITMAP TestGdi(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont)
 {
     HDC hScreenDC = GetDC(NULL);
     HBITMAP hbm = CreateCompatibleBitmap(hScreenDC, WIDTH, HEIGHT);
@@ -1606,15 +1616,15 @@ HBITMAP TestGdi(const char* font_name, int font_size, XFORM& xform, HFONT hFont)
     return hbm;
 }
 
-bool TestEntry(const char* font_name, int font_size, XFORM& xform)
+bool TestEntry(PCWSTR font_name, int font_size, XFORM& xform)
 {
-    LOGFONTA lf;
+    LOGFONTW lf;
     memset(&lf, 0, sizeof(lf));
     lf.lfHeight = font_size;
     lf.lfCharSet = DEFAULT_CHARSET;
-    lstrcpyA(lf.lfFaceName, font_name);
+    lstrcpyW(lf.lfFaceName, font_name);
 
-    HFONT hFont = CreateFontIndirectA(&lf);
+    HFONT hFont = CreateFontIndirectW(&lf);
 
     HBITMAP hbm1 = TestFreeType(font_name, font_size, xform, hFont);
     HBITMAP hbm2 = TestGdi(font_name, font_size, xform, hFont);
@@ -1628,12 +1638,13 @@ bool TestEntry(const char* font_name, int font_size, XFORM& xform)
     BOOL ret = nearly_equal_bitmap(hbm1, hbm2, color1, color2);
     if (ret)
     {
-        printf("%s, %d: Success!\n", font_name, font_size);
+        printf("%S, %d: Success!\n", font_name, font_size);
     }
     else
     {
-        printf("%s, %d: FAILED\n", font_name, font_size);
+        printf("%S, %d: FAILED\n", font_name, font_size);
     }
+
     SaveBitmapToFile("a.bmp", hbm1);
     SaveBitmapToFile("b.bmp", hbm2);
     DeleteObject(hbm2);
@@ -1641,9 +1652,9 @@ bool TestEntry(const char* font_name, int font_size, XFORM& xform)
     return ret;
 }
 
-int main(int argc, char** argv)
+int wmain(int argc, wchar_t** wargv)
 {
-    const char* font_name = FONT_NAME;
+    PCWSTR font_name = FONT_NAME;
     int font_size = FONT_SIZE;
 
     XFORM xform;
@@ -1654,12 +1665,12 @@ int main(int argc, char** argv)
     xform.eDx = 0;
     xform.eDy = 0;
 
-    if (argc >= 2) font_name = argv[1];
-    if (argc >= 3) font_size = atoi(argv[2]);
-    if (argc >= 4) xform.eM11 = atoi(argv[3]);
-    if (argc >= 5) xform.eM12 = atoi(argv[4]);
-    if (argc >= 6) xform.eM21 = atoi(argv[5]);
-    if (argc >= 7) xform.eM22 = atoi(argv[6]);
+    if (argc >= 2) font_name = wargv[1];
+    if (argc >= 3) font_size = _wtoi(wargv[2]);
+    if (argc >= 4) xform.eM11 = _wtoi(wargv[3]);
+    if (argc >= 5) xform.eM12 = _wtoi(wargv[4]);
+    if (argc >= 6) xform.eM21 = _wtoi(wargv[5]);
+    if (argc >= 7) xform.eM22 = _wtoi(wargv[6]);
 
     if (!InitFontSupport()) {
         FreeFontSupport();
@@ -1670,4 +1681,13 @@ int main(int argc, char** argv)
 
     FreeFontSupport();
     return ret ? 0 : 1;
+}
+
+int main(void)
+{
+    int argc;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    int ret =wmain(argc, wargv);
+    LocalFree(wargv);
+    return ret;
 }
