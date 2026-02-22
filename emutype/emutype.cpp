@@ -1511,9 +1511,9 @@ HBITMAP TestCommon(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont, B
 
     HGDIOBJ hFontOld = SelectObject(hdc, hFont);
     if (bFreeType)
-        EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
+        EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, ETO_OPAQUE, &rc, text, lstrlenW(text), NULL);
     else
-        ExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, 0, &rc, text, lstrlenW(text), NULL);
+        ExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, ETO_OPAQUE, &rc, text, lstrlenW(text), NULL);
     SelectObject(hdc, hFontOld);
 
     SelectObject(hdc, hbmOld);
