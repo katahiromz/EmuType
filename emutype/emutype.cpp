@@ -1192,6 +1192,7 @@ static bool OpenFaceForDraw(
     FT_WinFNT_HeaderRec* out_WinFNT,
     bool*                out_has_fnt_header,
     int*                 out_pixel_ascent,
+    int*                 out_pixel_descent,
     int*                 out_baseline_y)
 {
     bool is_raster = is_raster_font(font_info->wide_path);
@@ -1227,6 +1228,11 @@ static bool OpenFaceForDraw(
         *out_pixel_ascent = (*out_has_fnt_header)
             ? out_WinFNT->ascent
             : ((*out_face)->size->metrics.ascender + 32) >> 6;
+        // descent = cell height - ascent
+        int cell_height = (*out_has_fnt_header)
+            ? (int)out_WinFNT->pixel_height
+            : (((*out_face)->size->metrics.height + 32) >> 6);
+        *out_pixel_descent = cell_height - *out_pixel_ascent;
         *out_baseline_y = Y + *out_pixel_ascent;
     }
     else
@@ -1259,7 +1265,8 @@ static bool OpenFaceForDraw(
         if (have_vdmx)
         {
             // VDMX?????m??????s?N?Z???l??????B
-            *out_pixel_ascent = vdmx.yMax;
+            *out_pixel_ascent  = vdmx.yMax;
+            *out_pixel_descent = -vdmx.yMin; // yMin は負値
         }
         else
         {
@@ -1271,11 +1278,13 @@ static bool OpenFaceForDraw(
                 FT_Fixed em_scale = FT_MulDiv(
                     (FT_Long)ppem, 1 << 16,
                     (FT_Long)(*out_face)->units_per_EM);
-                *out_pixel_ascent = (int)FT_MulFix((FT_Long)os2->usWinAscent, em_scale);
+                *out_pixel_ascent  = (int)FT_MulFix((FT_Long)os2->usWinAscent,  em_scale);
+                *out_pixel_descent = (int)FT_MulFix((FT_Long)os2->usWinDescent, em_scale);
             }
             else
             {
-                *out_pixel_ascent = ((*out_face)->size->metrics.ascender + 32) >> 6;
+                *out_pixel_ascent  = ((*out_face)->size->metrics.ascender  + 32) >> 6;
+                *out_pixel_descent = (-(*out_face)->size->metrics.descender + 32) >> 6;
             }
         }
 
@@ -1465,11 +1474,11 @@ BOOL EmulatedExtTextOutW(
     FT_Face face = NULL;
     FT_WinFNT_HeaderRec WinFNT;
     bool has_fnt_header = false;
-    int pixel_ascent, baseline_y;
+    int pixel_ascent, pixel_descent, baseline_y;
 
     if (!OpenFaceForDraw(font_info, lfHeight, Y, &face,
                          &WinFNT, &has_fnt_header,
-                         &pixel_ascent, &baseline_y))
+                         &pixel_ascent, &pixel_descent, &baseline_y))
         return FALSE;
 
     FT_Int32 load_flags;
@@ -1484,10 +1493,14 @@ BOOL EmulatedExtTextOutW(
         load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD | FT_LOAD_FORCE_AUTOHINT;
     }
 
+    // -----------------------------------------------------------------------
+    // GetTextAlign によるアライメント処理
+    // -----------------------------------------------------------------------
     {
         UINT textAlign = GetTextAlign(hdc);
-        UINT hAlign = textAlign & (TA_LEFT | TA_CENTER | TA_RIGHT);
 
+        // --- 水平アライメント (TA_LEFT / TA_CENTER / TA_RIGHT) ---
+        UINT hAlign = textAlign & (TA_LEFT | TA_CENTER | TA_RIGHT);
         if (hAlign == TA_CENTER || hAlign == TA_RIGHT)
         {
             int strWidth = CalcStringWidthFT(font_info, face, is_raster,
@@ -1497,6 +1510,25 @@ BOOL EmulatedExtTextOutW(
             else // TA_RIGHT
                 X -= strWidth;
         }
+
+        // --- 垂直アライメント (TA_TOP / TA_BASELINE / TA_BOTTOM) ---
+        // OpenFaceForDraw は Y をセル上端と仮定して baseline_y を計算済み (TA_TOP 相当)。
+        // TA_BASELINE / TA_BOTTOM の場合は Y の解釈が異なるため baseline_y を再計算する。
+        //
+        //   TA_TOP      : Y = セル上端  → baseline_y = Y + ascent   (既定)
+        //   TA_BASELINE : Y = ベースライン → baseline_y = Y
+        //   TA_BOTTOM   : Y = セル下端  → baseline_y = Y - descent
+        //
+        UINT vAlign = textAlign & (TA_TOP | TA_BASELINE | TA_BOTTOM);
+        if (vAlign == TA_BASELINE)
+        {
+            baseline_y = Y;                    // Y 自体がベースライン
+        }
+        else if (vAlign == TA_BOTTOM)
+        {
+            baseline_y = Y - pixel_descent;    // セル下端からアセントぶん上
+        }
+        // TA_TOP は OpenFaceForDraw の計算 (Y + pixel_ascent) がそのまま正しい
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
@@ -1625,7 +1657,7 @@ HBITMAP TestCommon(PCWSTR font_name, int font_size, XFORM& xform, HFONT hFont, B
     SetWorldTransform(hdc, &xform);
 
     HGDIOBJ hFontOld = SelectObject(hdc, hFont);
-    SetTextAlign(hdc, TA_CENTER);
+    SetTextAlign(hdc, TA_CENTER | TA_BOTTOM);
     if (bFreeType)
         EmulatedExtTextOutW(hdc, WIDTH / 2, HEIGHT / 2, ETO_OPAQUE, &rc, text, lstrlenW(text), NULL);
     else
