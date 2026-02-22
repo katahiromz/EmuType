@@ -1284,7 +1284,7 @@ static bool OpenFaceForDraw(
     return true;
 }
 
-static int get_text_disposition(
+static void get_text_disposition(
     int* width,
     int* height,
     FontInfo*    font_info,
@@ -1294,18 +1294,10 @@ static int get_text_disposition(
     INT          Count,
     CONST INT*   lpDx)
 {
-    if (!lpString || Count <= 0)
-        return 0;
-
     *width = *height = 0;
 
-    if (lpDx)
-    {
-        int total = 0;
-        for (INT i = 0; i < Count; ++i)
-            total += lpDx[i];
-        return total;
-    }
+    if (!lpString || Count <= 0)
+        return;
 
     UINT codepage = get_codepage_from_charset(font_info->charset);
     FT_Int32 load_flags = is_raster
@@ -1448,6 +1440,14 @@ BOOL EmulatedExtTextOutW(
     GetWorldTransform(hdc, &xform);
     ModifyWorldTransform(hdc, NULL, MWT_IDENTITY);
 
+    std::vector<INT> scaledDX(Count);
+    if (lpDx) {
+        for (UINT i = 0; i < Count; ++i) {
+            scaledDX[i] = (INT)(lpDx[i] * xform.eM11);
+        }
+        lpDx = &scaledDX[0];
+    }
+
     COLORREF fg_color = GetTextColor(hdc);
     COLORREF bg_color = GetBkColor(hdc);
 
@@ -1520,7 +1520,7 @@ BOOL EmulatedExtTextOutW(
             baseline_y = Y - pixel_descent;
         }
 
-        wprintf("baseline_y: %d, strWidth: %d, strHeight: %d\n", baseline_y, strWidth, strHeight);
+        wprintf(L"baseline_y: %d, strWidth: %d, strHeight: %d\n", baseline_y, strWidth, strHeight);
     }
 
     FT_Pos current_pen_x = (FT_Pos)X << 6;
@@ -1626,7 +1626,7 @@ BOOL EmulatedExtTextOutW(
     if (face)
         FT_Done_Face(face);
 
-    SetWorldTransform(hdc, &xform)
+    SetWorldTransform(hdc, &xform);
 
     return TRUE;
 }
