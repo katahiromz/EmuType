@@ -37,7 +37,7 @@ endif()
 find_package(Freetype REQUIRED)
 
 # emutype.exe
-add_executable(emutype emutype.cpp SaveBitmapToFile.c nearly_equal_bitmap.cpp)
+add_executable(emutype emutype.cpp SaveBitmapToFile.c util.cpp)
 target_include_directories(emutype PRIVATE ${FREETYPE_INCLUDE_DIRS})
 target_link_libraries(emutype PRIVATE shlwapi gdi32 Freetype::Freetype)
 

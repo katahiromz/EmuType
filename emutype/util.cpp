@@ -1,5 +1,48 @@
 #include <windows.h>
 #include <stdio.h>
+#include "util.h"
+
+//  For TranslateCharsetInfo
+const CHARSETINFO g_FontTci[MAXTCIINDEX] =
+{
+    /* ANSI */
+    { ANSI_CHARSET, 1252, {{0,0,0,0},{FS_LATIN1,0}} },
+    { EASTEUROPE_CHARSET, 1250, {{0,0,0,0},{FS_LATIN2,0}} },
+    { RUSSIAN_CHARSET, 1251, {{0,0,0,0},{FS_CYRILLIC,0}} },
+    { GREEK_CHARSET, 1253, {{0,0,0,0},{FS_GREEK,0}} },
+    { TURKISH_CHARSET, 1254, {{0,0,0,0},{FS_TURKISH,0}} },
+    { HEBREW_CHARSET, 1255, {{0,0,0,0},{FS_HEBREW,0}} },
+    { ARABIC_CHARSET, 1256, {{0,0,0,0},{FS_ARABIC,0}} },
+    { BALTIC_CHARSET, 1257, {{0,0,0,0},{FS_BALTIC,0}} },
+    { VIETNAMESE_CHARSET, 1258, {{0,0,0,0},{FS_VIETNAMESE,0}} },
+    /* reserved by ANSI */
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    /* ANSI and OEM */
+    { THAI_CHARSET, 874, {{0,0,0,0},{FS_THAI,0}} },
+    { SHIFTJIS_CHARSET, 932, {{0,0,0,0},{FS_JISJAPAN,0}} },
+    { GB2312_CHARSET, 936, {{0,0,0,0},{FS_CHINESESIMP,0}} },
+    { HANGEUL_CHARSET, 949, {{0,0,0,0},{FS_WANSUNG,0}} },
+    { CHINESEBIG5_CHARSET, 950, {{0,0,0,0},{FS_CHINESETRAD,0}} },
+    { JOHAB_CHARSET, 1361, {{0,0,0,0},{FS_JOHAB,0}} },
+    /* Reserved for alternate ANSI and OEM */
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    /* Reserved for system */
+    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
+    { SYMBOL_CHARSET, CP_SYMBOL, {{0,0,0,0},{FS_SYMBOL,0}} }
+};
 
 void get_box(BITMAP& bm, COLORREF* pixels, INT& min_x, INT& min_y, INT& max_x, INT& max_y, COLORREF target_color)
 {
@@ -76,4 +119,19 @@ BOOL nearly_equal_bitmap(HBITMAP hbm1, HBITMAP hbm2, COLORREF color1, COLORREF c
     int threshould = ((bm1.bmWidth + bm1.bmHeight) / 2) * 10 / 100; // 10%
     printf("%d %d\n", sum, threshould);
     return sum <= threshould;
+}
+
+UINT get_codepage_from_charset(BYTE charset)
+{
+    UINT codepage = 1252;
+    for (int tci_i = 0; tci_i < MAXTCIINDEX; ++tci_i)
+    {
+        if (g_FontTci[tci_i].ciCharset == charset &&
+            g_FontTci[tci_i].ciACP != 0)
+        {
+            codepage = g_FontTci[tci_i].ciACP;
+            break;
+        }
+    }
+    return codepage;
 }

@@ -19,7 +19,7 @@
 #include FT_LCD_FILTER_H
 
 #include "SaveBitmapToFile.h"
-#include "nearly_equal_bitmap.h"
+#include "util.h"
 
 #define MAKE_SURROGATE_PAIR(w1, w2) \
     (0x10000 + (((DWORD)(w1) - HIGH_SURROGATE_START) << 10) + ((DWORD)(w2) - LOW_SURROGATE_START));
@@ -38,52 +38,6 @@ const COLORREF color2 = RGB(255, 255, 0);
 
 // Using a different registry key for this test.
 const WCHAR* reg_key = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontsEmulated";
-
-/*
- *  For TranslateCharsetInfo
- */
-#define CP_SYMBOL   42
-#define MAXTCIINDEX 32
-static const CHARSETINFO g_FontTci[MAXTCIINDEX] =
-{
-    /* ANSI */
-    { ANSI_CHARSET, 1252, {{0,0,0,0},{FS_LATIN1,0}} },
-    { EASTEUROPE_CHARSET, 1250, {{0,0,0,0},{FS_LATIN2,0}} },
-    { RUSSIAN_CHARSET, 1251, {{0,0,0,0},{FS_CYRILLIC,0}} },
-    { GREEK_CHARSET, 1253, {{0,0,0,0},{FS_GREEK,0}} },
-    { TURKISH_CHARSET, 1254, {{0,0,0,0},{FS_TURKISH,0}} },
-    { HEBREW_CHARSET, 1255, {{0,0,0,0},{FS_HEBREW,0}} },
-    { ARABIC_CHARSET, 1256, {{0,0,0,0},{FS_ARABIC,0}} },
-    { BALTIC_CHARSET, 1257, {{0,0,0,0},{FS_BALTIC,0}} },
-    { VIETNAMESE_CHARSET, 1258, {{0,0,0,0},{FS_VIETNAMESE,0}} },
-    /* reserved by ANSI */
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    /* ANSI and OEM */
-    { THAI_CHARSET, 874, {{0,0,0,0},{FS_THAI,0}} },
-    { SHIFTJIS_CHARSET, 932, {{0,0,0,0},{FS_JISJAPAN,0}} },
-    { GB2312_CHARSET, 936, {{0,0,0,0},{FS_CHINESESIMP,0}} },
-    { HANGEUL_CHARSET, 949, {{0,0,0,0},{FS_WANSUNG,0}} },
-    { CHINESEBIG5_CHARSET, 950, {{0,0,0,0},{FS_CHINESETRAD,0}} },
-    { JOHAB_CHARSET, 1361, {{0,0,0,0},{FS_JOHAB,0}} },
-    /* Reserved for alternate ANSI and OEM */
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    /* Reserved for system */
-    { DEFAULT_CHARSET, 0, {{0,0,0,0},{FS_LATIN1,0}} },
-    { SYMBOL_CHARSET, CP_SYMBOL, {{0,0,0,0},{FS_SYMBOL,0}} }
-};
 
 struct FontInfo {
     WCHAR wide_path[MAX_PATH];
@@ -1436,10 +1390,7 @@ BOOL EmulatedExtTextOutW(
     FT_UInt previous_glyph = 0; // Holds the previous glyph index
     bool use_kerning = false;
 
-    UINT codepage = 1252;
-    CHARSETINFO csi;
-    if (TranslateCharsetInfo((DWORD*)(DWORD_PTR)font_info->charset, &csi, TCI_SRCCHARSET))
-        codepage = csi.ciACP;
+    UINT codepage = get_codepage_from_charset(font_info->charset);
 
     const WCHAR* pch = lpString;
     for (INT i = 0; i < Count; ++i)
